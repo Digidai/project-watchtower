@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Project Watchtower light checks hourly
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

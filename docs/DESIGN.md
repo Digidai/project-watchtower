@@ -1,0 +1,72 @@
+# Design
+
+## Objective
+
+Keep the OCI instance useful by making it a small, real monitoring node for the
+Digidai public project ecosystem. The server periodically checks GitHub project
+metadata, product URLs, certificates, response times, and local resource metrics.
+
+## Non-Goals
+
+- No fake traffic generation.
+- No CPU burn loops.
+- No broad internet scanning.
+- No unaudited remote shell from GitHub Actions.
+- No `dnf` dependency for the first deployment path.
+
+## Runtime Boundary
+
+The server runs `/opt/project-watchtower/scripts/watchtower-run`.
+
+Resource controls:
+
+- `nice -n 10`
+- systemd `CPUQuota=30%`
+- systemd `MemoryMax=350M`
+- one-process lock via `/tmp/project-watchtower.lock`
+- Python request timeout and byte budget
+
+Network controls:
+
+- URL scheme must be HTTP or HTTPS.
+- Host must match `config/targets.json` allowlist.
+- Concurrency defaults to 3.
+- Per-request body read defaults to 2 MiB.
+- Per-run byte budgets default to 8 MiB, 64 MiB, and 192 MiB for light, daily,
+  and weekly mode.
+
+## GitHub Actions Boundary
+
+GitHub Actions should authenticate with a dedicated SSH key. The server-side
+authorized key should use a forced command:
+
+```text
+command="/opt/project-watchtower/scripts/forced-command.sh",no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc ssh-ed25519 ...
+```
+
+That script accepts only `light`, `daily`, `weekly`, and `status`.
+
+## Reports
+
+Reports are written under `/var/lib/project-watchtower/reports`:
+
+- `latest.json`
+- `latest.md`
+- archived reports by run id
+
+The JSON report includes:
+
+- GitHub API metadata
+- repository inventory
+- URL health results
+- rejected URL list
+- local system metrics
+- resource budget usage
+
+## Reclamation Reality
+
+Oracle documents that idle Always Free instances may be reclaimed when CPU,
+network, and in some shapes memory utilization stay below thresholds over a
+7-day period. This project creates legitimate periodic usage, but it does not
+guarantee retention. The reliable retention path is a paid account or a real
+production workload with organic traffic.

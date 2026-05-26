@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ORIGINAL="${SSH_ORIGINAL_COMMAND:-light}"
+case "$ORIGINAL" in
+  light|daily|weekly)
+    exec /opt/project-watchtower/scripts/watchtower-run "$ORIGINAL"
+    ;;
+  status)
+    exec /usr/bin/env sh -c 'test -f /var/lib/project-watchtower/reports/latest.json && cat /var/lib/project-watchtower/reports/latest.json || echo "{}"'
+    ;;
+  *)
+    echo "command not allowed" >&2
+    exit 126
+    ;;
+esac

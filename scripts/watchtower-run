@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+MODE="${1:-light}"
+case "$MODE" in
+  light|daily|weekly) ;;
+  *) echo "invalid mode: $MODE" >&2; exit 64 ;;
+esac
+
+APP_DIR="${WATCHTOWER_APP_DIR:-/opt/project-watchtower}"
+STATE_DIR="${WATCHTOWER_STATE_DIR:-/var/lib/project-watchtower}"
+LOCK_DIR="${WATCHTOWER_LOCK_DIR:-/tmp/project-watchtower.lock}"
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo "watchtower already running" >&2
+  exit 75
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+cd "$APP_DIR"
+export PYTHONPATH="$APP_DIR"
+exec nice -n 10 python3 -m watchtower.cli run \
+  --mode "$MODE" \
+  --config "$APP_DIR/config/targets.json" \
+  --output-dir "$STATE_DIR/reports" \
+  --no-fail

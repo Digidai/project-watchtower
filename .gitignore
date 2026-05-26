@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+reports/
+.DS_Store
+.env
+*.key
+*.pem

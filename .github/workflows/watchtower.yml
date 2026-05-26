@@ -1,0 +1,66 @@
+name: Project Watchtower
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: true
+        default: "light"
+        type: choice
+        options:
+          - light
+          - daily
+          - weekly
+  schedule:
+    - cron: "17 * * * *"
+    - cron: "31 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  run-server-watchtower:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve mode
+        id: mode
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "$(date -u +%H)" = "03" ]; then
+            echo "mode=daily" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=light" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare SSH key
+        shell: bash
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.WATCHTOWER_SSH_KEY }}" > ~/.ssh/watchtower
+          printf '%s\n' "${{ secrets.WATCHTOWER_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/watchtower
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Run on server
+        shell: bash
+        env:
+          WATCHTOWER_HOST: ${{ secrets.WATCHTOWER_HOST }}
+          WATCHTOWER_USER: ${{ secrets.WATCHTOWER_USER }}
+          WATCHTOWER_PORT: ${{ secrets.WATCHTOWER_PORT }}
+        run: |
+          : "${WATCHTOWER_HOST:?missing WATCHTOWER_HOST}"
+          : "${WATCHTOWER_USER:?missing WATCHTOWER_USER}"
+          PORT="${WATCHTOWER_PORT:-22}"
+          ssh \
+            -i ~/.ssh/watchtower \
+            -p "$PORT" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o ConnectTimeout=20 \
+            "$WATCHTOWER_USER@$WATCHTOWER_HOST" \
+            "${{ steps.mode.outputs.mode }}" | tee watchtower-result.json

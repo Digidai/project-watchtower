@@ -1,0 +1,41 @@
+{
+  "github_owner": "Digidai",
+  "allowed_hosts": [
+    "github.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+    "*.github.io",
+    "genedai.me",
+    "www.genedai.me",
+    "openjobs-ai.com",
+    "www.openjobs-ai.com",
+    "openjobs.genedai.me",
+    "hireai.genedai.me",
+    "genedai.cv",
+    "www.genedai.cv",
+    "recruit.genedai.me",
+    "genedai.space",
+    "www.genedai.space"
+  ],
+  "urls": [
+    "https://github.com/Digidai",
+    "https://genedai.me",
+    "https://www.openjobs-ai.com",
+    "https://openjobs.genedai.me",
+    "https://hireai.genedai.me",
+    "https://genedai.cv",
+    "https://recruit.genedai.me",
+    "https://genedai.space"
+  ],
+  "policy": {
+    "timeout_seconds": 10,
+    "max_concurrency": 3,
+    "github_max_pages": 5,
+    "per_request_max_bytes": 2097152,
+    "mode_max_megabytes": {
+      "light": 8,
+      "daily": 64,
+      "weekly": 192
+    }
+  }
+}

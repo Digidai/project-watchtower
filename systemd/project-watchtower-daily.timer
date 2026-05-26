@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Project Watchtower daily inventory
+
+[Timer]
+OnCalendar=*-*-* 03:31:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
