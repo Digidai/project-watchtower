@@ -30,7 +30,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [ "$(date -u +%H)" = "03" ]; then
+          elif [ "${{ github.event.schedule }}" = "31 3 * * *" ]; then
             echo "mode=daily" >> "$GITHUB_OUTPUT"
           else
             echo "mode=light" >> "$GITHUB_OUTPUT"
