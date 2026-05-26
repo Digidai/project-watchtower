@@ -80,5 +80,8 @@ sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-daily.ti
 sudo systemctl daemon-reload
 sudo systemctl enable --now project-watchtower-light.timer project-watchtower-daily.timer
 
+if ! pgrep -u watchtower -f 'watchtower.cli run' >/dev/null 2>&1; then
+  sudo rm -rf /tmp/project-watchtower.lock
+fi
 sudo -u watchtower /opt/project-watchtower/scripts/watchtower-run light
 REMOTE
