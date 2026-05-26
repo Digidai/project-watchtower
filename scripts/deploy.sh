@@ -20,6 +20,8 @@ trap cleanup EXIT
 
 tar \
   --exclude='.git' \
+  --exclude='.secrets' \
+  --exclude='__pycache__' \
   --exclude='reports' \
   --exclude='*.pyc' \
   -czf "$ARCHIVE" \
@@ -50,6 +52,7 @@ command -v python3 >/dev/null
 
 sudo mkdir -p /opt/project-watchtower /var/lib/project-watchtower/reports
 sudo tar -xzf /tmp/project-watchtower.tar.gz -C /opt/project-watchtower
+sudo rm -rf /opt/project-watchtower/.secrets /opt/project-watchtower/reports /opt/project-watchtower/watchtower/__pycache__
 sudo chmod +x /opt/project-watchtower/scripts/watchtower-run /opt/project-watchtower/scripts/forced-command.sh
 
 if ! id watchtower >/dev/null 2>&1; then

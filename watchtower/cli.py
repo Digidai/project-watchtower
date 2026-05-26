@@ -29,6 +29,7 @@ from typing import Any, Iterable
 
 
 DEFAULT_USER_AGENT = "DigidaiProjectWatchtower/0.1 (+https://github.com/Digidai/project-watchtower)"
+UTC = dt.timezone.utc
 
 
 @dataclasses.dataclass(frozen=True)
@@ -75,7 +76,7 @@ class ByteBudget:
 
 
 def utc_now() -> str:
-    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return dt.datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -231,8 +232,8 @@ def tls_days_remaining(url: str, timeout: float) -> int | None:
         not_after = cert.get("notAfter")
         if not not_after:
             return None
-        expiry = dt.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=dt.UTC)
-        return (expiry - dt.datetime.now(dt.UTC)).days
+        expiry = dt.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=UTC)
+        return (expiry - dt.datetime.now(UTC)).days
     except Exception:
         return None
 
@@ -337,7 +338,7 @@ def staleness_days(iso_value: str | None) -> int | None:
         parsed = dt.datetime.fromisoformat(iso_value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return (dt.datetime.now(dt.UTC) - parsed).days
+    return (dt.datetime.now(UTC) - parsed).days
 
 
 def summarize(repos: list[RepoSummary], url_results: list[UrlResult]) -> dict[str, Any]:
