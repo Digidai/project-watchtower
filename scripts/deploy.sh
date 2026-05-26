@@ -33,7 +33,15 @@ ssh_opts=(
   -o ConnectTimeout=20
 )
 
-scp "${ssh_opts[@]}" "$ARCHIVE" "$USER@$HOST:/tmp/project-watchtower.tar.gz"
+scp_opts=(
+  -i "$KEY"
+  -P "$PORT"
+  -o IdentitiesOnly=yes
+  -o StrictHostKeyChecking=yes
+  -o ConnectTimeout=20
+)
+
+scp "${scp_opts[@]}" "$ARCHIVE" "$USER@$HOST:/tmp/project-watchtower.tar.gz"
 
 ssh "${ssh_opts[@]}" "$USER@$HOST" "WATCHTOWER_AUTHORIZED_KEY_B64='$AUTHORIZED_KEY_B64' bash -s" <<'REMOTE'
 set -Eeuo pipefail
