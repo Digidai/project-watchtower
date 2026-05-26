@@ -5,6 +5,8 @@
 Keep the OCI instance useful by making it a small, real monitoring node for the
 Digidai public project ecosystem. The server periodically checks GitHub project
 metadata, product URLs, certificates, response times, and local resource metrics.
+Daily and weekly modes also sample README-discovered links and recent GitHub
+workflow status for active non-fork repositories.
 
 ## Non-Goals
 
@@ -30,10 +32,17 @@ Network controls:
 
 - URL scheme must be HTTP or HTTPS.
 - Host must match `config/targets.json` allowlist.
+- Repo homepages and README-discovered links can use broader hosts, but social,
+  link-shortener, and known bot-hostile hosts stay blocked.
 - Concurrency defaults to 3.
 - Per-request body read defaults to 2 MiB.
-- Per-run byte budgets default to 8 MiB, 64 MiB, and 192 MiB for light, daily,
+- Per-run byte budgets default to 8 MiB, 128 MiB, and 384 MiB for light, daily,
   and weekly mode.
+- Per-mode URL caps keep expanded discovery bounded.
+- GitHub detail checks use an API request budget so the server does not burn
+  through unauthenticated rate limits.
+- Slow URL warnings default to 8 seconds to avoid noisy alerts from normal
+  third-party project sites.
 
 ## GitHub Actions Boundary
 
@@ -45,6 +54,8 @@ command="/opt/project-watchtower/scripts/forced-command.sh",no-agent-forwarding,
 ```
 
 That script accepts only `light`, `daily`, `weekly`, and `status`.
+GitHub-triggered runs tolerate a `busy` lock and return a bounded JSON response
+instead of failing or stacking parallel checks.
 
 ## Reports
 
@@ -60,6 +71,8 @@ The JSON report includes:
 - repository inventory
 - URL health results
 - rejected URL list
+- README-discovered URL count
+- GitHub README/workflow check results
 - local system metrics
 - resource budget usage
 

@@ -13,7 +13,7 @@ on:
           - daily
           - weekly
   schedule:
-    - cron: "17 * * * *"
+    - cron: "12,42 * * * *"
     - cron: "31 3 * * *"
 
 permissions:

@@ -5,7 +5,12 @@
     "api.github.com",
     "raw.githubusercontent.com",
     "*.github.io",
+    "*.vercel.app",
+    "*.workers.dev",
+    "*.pages.dev",
+    "*.js.org",
     "genedai.me",
+    "*.genedai.me",
     "www.genedai.me",
     "openjobs-ai.com",
     "www.openjobs-ai.com",
@@ -15,8 +20,62 @@
     "www.genedai.cv",
     "recruit.genedai.me",
     "genedai.space",
-    "www.genedai.space"
+    "www.genedai.space",
+    "mails0.com",
+    "*.mails0.com",
+    "digidai.com",
+    "*.digidai.com",
+    "crabfleet.ai",
+    "*.crabfleet.ai",
+    "genedai.workers.dev",
+    "*.genedai.workers.dev",
+    "clawhub.ai",
+    "glama.ai",
+    "multica.ai",
+    "skills.sh",
+    "openclawsearch.com",
+    "evolink.ai",
+    "awesome.tryopenclaw.asia",
+    "www.clawith.ai",
+    "crewclaw.com",
+    "awesomeclaude.ai",
+    "www.scriptbyai.com",
+    "openclaw.ai",
+    "tonsofskills.com",
+    "myclaw.ai",
+    "claudecodeplugins.dev",
+    "agentskills.io",
+    "profile.digidai.com",
+    "crawl4ai.com",
+    "papercopilot.com",
+    "anycrawl.dev",
+    "ai.google.dev",
+    "www.opendeepresearch.dev",
+    "wr.do",
+    "chat.vercel.ai",
+    "chat-preview.lobehub.com",
+    "flowiseai.com",
+    "www.marktext.cc",
+    "dify.ai",
+    "chat.okisdev.com",
+    "markdoc.dev",
+    "docs.readthedocs.io",
+    "apitable.com",
+    "rxresu.me",
+    "fsnot.es",
+    "prompts.chat"
   ],
+  "blocked_hosts": [
+    "x.com",
+    "twitter.com",
+    "www.linkedin.com",
+    "linkedin.com",
+    "medium.com",
+    "*.medium.com",
+    "linktr.ee",
+    "git.io"
+  ],
+  "allow_repo_discovered_hosts": true,
   "urls": [
     "https://github.com/Digidai",
     "https://genedai.me",
@@ -28,14 +87,31 @@
     "https://genedai.space"
   ],
   "policy": {
-    "timeout_seconds": 10,
-    "max_concurrency": 3,
+    "timeout_seconds": 6,
+    "max_concurrency": 6,
+    "slow_url_ms": 8000,
     "github_max_pages": 5,
     "per_request_max_bytes": 2097152,
+    "readme_link_max_per_repo": 5,
+    "report_retention": 2000,
+    "mode_max_urls": {
+      "light": 12,
+      "daily": 260,
+      "weekly": 500
+    },
+    "github_detail_concurrency": 4,
+    "github_detail_repos": {
+      "daily": 12,
+      "weekly": 28
+    },
+    "github_detail_api_requests": {
+      "daily": 45,
+      "weekly": 80
+    },
     "mode_max_megabytes": {
       "light": 8,
-      "daily": 64,
-      "weekly": 192
+      "daily": 128,
+      "weekly": 384
     }
   }
 }

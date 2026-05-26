@@ -36,8 +36,8 @@ WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
 ## Modes
 
 - `light`: checks the curated core URL list about every 30 minutes.
-- `daily`: fetches the Digidai public repository inventory and checks repo homepages.
-- `weekly`: reserved for deeper checks with a larger byte budget.
+- `daily`: fetches the Digidai public repository inventory, checks repo homepages, samples README links, and checks recent repo workflow status.
+- `weekly`: deeper checks with a larger URL and byte budget.
 
 ## GitHub Actions Setup
 
@@ -51,7 +51,13 @@ for a restricted `watchtower` login, then set repository secrets:
 - `WATCHTOWER_KNOWN_HOSTS`
 
 The workflow sends only `light`, `daily`, or `weekly` as the SSH command. On the
-server, `scripts/forced-command.sh` rejects every other command.
+server, `scripts/forced-command.sh` rejects every other command. If a server-side
+timer is already running, GitHub-triggered runs return a bounded `busy` response
+instead of opening a shell or stacking parallel jobs.
+
+The scheduled GitHub workflow contacts the server twice per hour and runs the
+daily mode once per day. Server-side systemd timers also run independently, so
+monitoring continues even if GitHub Actions is delayed.
 
 Recommended key setup:
 
@@ -71,3 +77,7 @@ This project performs real health monitoring. It does not run artificial CPU
 burners, traffic generators, stress tests, mining, or unrelated third-party
 traffic. The byte budget exists to prevent runaway network usage, not to create
 synthetic load.
+
+URL failures are split into critical and observed failures. Curated core URLs are
+critical; repo pages, repo homepages, and README-discovered links are observed so
+that one stale upstream URL does not make the server itself look broken.
