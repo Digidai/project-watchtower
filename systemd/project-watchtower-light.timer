@@ -1,10 +1,10 @@
 [Unit]
-Description=Run Project Watchtower light checks hourly
+Description=Run Project Watchtower light checks every 30 minutes
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=1h
-RandomizedDelaySec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
 Persistent=true
 
 [Install]

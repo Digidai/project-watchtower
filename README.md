@@ -35,7 +35,7 @@ WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
 
 ## Modes
 
-- `light`: checks the curated core URL list hourly.
+- `light`: checks the curated core URL list about every 30 minutes.
 - `daily`: fetches the Digidai public repository inventory and checks repo homepages.
 - `weekly`: reserved for deeper checks with a larger byte budget.
 
