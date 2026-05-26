@@ -18,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-tar \
+COPYFILE_DISABLE=1 tar --format ustar \
   --exclude='.git' \
   --exclude='.secrets' \
   --exclude='__pycache__' \
