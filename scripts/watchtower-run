@@ -19,7 +19,7 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 cd "$APP_DIR"
 export PYTHONPATH="$APP_DIR"
-exec nice -n 10 python3 -m watchtower.cli run \
+nice -n 10 python3 -m watchtower.cli run \
   --mode "$MODE" \
   --config "$APP_DIR/config/targets.json" \
   --output-dir "$STATE_DIR/reports" \
