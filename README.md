@@ -29,6 +29,7 @@ Deploy to the OCI instance without using `dnf`:
 WATCHTOWER_HOST=<server-ip> \
 WATCHTOWER_USER=opc \
 WATCHTOWER_KEY=<path-to-ssh-key> \
+WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
 ./scripts/deploy.sh
 ```
 
@@ -51,6 +52,18 @@ for a restricted `watchtower` login, then set repository secrets:
 
 The workflow sends only `light`, `daily`, or `weekly` as the SSH command. On the
 server, `scripts/forced-command.sh` rejects every other command.
+
+Recommended key setup:
+
+```bash
+mkdir -p .secrets
+ssh-keygen -t ed25519 -C project-watchtower@github -f .secrets/watchtower_ed25519 -N ""
+gh secret set WATCHTOWER_SSH_KEY < .secrets/watchtower_ed25519
+gh secret set WATCHTOWER_HOST --body "<server-ip>"
+gh secret set WATCHTOWER_USER --body "watchtower"
+gh secret set WATCHTOWER_PORT --body "22"
+ssh-keyscan -t ed25519 <server-ip> | gh secret set WATCHTOWER_KNOWN_HOSTS
+```
 
 ## Safety Model
 

@@ -3,5 +3,6 @@ __pycache__/
 reports/
 .DS_Store
 .env
+.secrets/
 *.key
 *.pem

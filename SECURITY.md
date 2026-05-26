@@ -26,6 +26,10 @@ as possible.
 The GitHub Actions SSH key must be dedicated to this project. Do not reuse your
 personal SSH key.
 
+Server-side SSH access should be restricted with the forced command in
+`scripts/forced-command.sh`; the Actions key should not receive an unrestricted
+shell.
+
 ## Reporting Vulnerabilities
 
 Open a private issue or contact the repository owner directly. Do not publish
