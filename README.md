@@ -9,6 +9,7 @@ The implementation is intentionally conservative:
 - no third-party Python dependencies
 - no package manager requirement on the server
 - explicit host allowlist
+- localhost and non-public IP literal checks for dynamically discovered hosts
 - per-request timeout
 - per-request and per-run byte budgets
 - low concurrency
@@ -38,6 +39,7 @@ WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
 - `light`: checks the curated core URL list about every 30 minutes.
 - `daily`: fetches the Digidai public repository inventory, checks repo homepages, samples README links, and checks recent repo workflow status.
 - `weekly`: deeper checks with a larger URL and byte budget.
+- `venture`: every 15 minutes, pulls VentureDex startup profiles from `https://venturedex.co/`, extracts canonical company homepages, and checks those homepages within a byte budget.
 
 ## GitHub Actions Setup
 
@@ -50,7 +52,7 @@ for a restricted `watchtower` login, then set repository secrets:
 - `WATCHTOWER_SSH_KEY`
 - `WATCHTOWER_KNOWN_HOSTS`
 
-The workflow sends only `light`, `daily`, or `weekly` as the SSH command. On the
+The workflow sends only `light`, `daily`, `weekly`, or `venture` as the SSH command. On the
 server, `scripts/forced-command.sh` rejects every other command. If a server-side
 timer is already running, GitHub-triggered runs return a bounded `busy` response
 instead of opening a shell or stacking parallel jobs.
@@ -79,5 +81,6 @@ traffic. The byte budget exists to prevent runaway network usage, not to create
 synthetic load.
 
 URL failures are split into critical and observed failures. Curated core URLs are
-critical; repo pages, repo homepages, and README-discovered links are observed so
-that one stale upstream URL does not make the server itself look broken.
+critical; repo pages, repo homepages, README-discovered links, and VentureDex
+company homepages are observed so that one stale upstream URL does not make the
+server itself look broken.

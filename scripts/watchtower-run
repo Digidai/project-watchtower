@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 MODE="${1:-light}"
 case "$MODE" in
-  light|daily|weekly) ;;
+  light|daily|weekly|venture) ;;
   *) echo "invalid mode: $MODE" >&2; exit 64 ;;
 esac
 

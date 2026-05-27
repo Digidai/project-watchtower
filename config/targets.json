@@ -4,6 +4,8 @@
     "github.com",
     "api.github.com",
     "raw.githubusercontent.com",
+    "venturedex.co",
+    "www.venturedex.co",
     "*.github.io",
     "*.vercel.app",
     "*.workers.dev",
@@ -76,6 +78,16 @@
     "git.io"
   ],
   "allow_repo_discovered_hosts": true,
+  "allow_venturedex_discovered_hosts": true,
+  "venturedex": {
+    "source_url": "https://venturedex.co/",
+    "profile_max": 80,
+    "company_max": 50,
+    "profile_concurrency": 6,
+    "sitemap_max_bytes": 1048576,
+    "homepage_max_bytes": 2097152,
+    "profile_page_max_bytes": 786432
+  },
   "urls": [
     "https://github.com/Digidai",
     "https://genedai.me",
@@ -97,7 +109,8 @@
     "mode_max_urls": {
       "light": 12,
       "daily": 260,
-      "weekly": 500
+      "weekly": 500,
+      "venture": 60
     },
     "github_detail_concurrency": 4,
     "github_detail_repos": {
@@ -111,7 +124,8 @@
     "mode_max_megabytes": {
       "light": 8,
       "daily": 128,
-      "weekly": 384
+      "weekly": 384,
+      "venture": 96
     }
   }
 }

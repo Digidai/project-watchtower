@@ -14,6 +14,7 @@ import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -26,6 +27,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -70,6 +72,14 @@ class UrlTarget:
     source: str
     repo: str | None = None
     critical: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class VentureDexStartup:
+    name: str
+    profile_url: str
+    company_url: str | None
+    error: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -144,6 +154,30 @@ def normalize_url(value: str | None) -> str | None:
     return urllib.parse.urlunparse(parsed._replace(fragment=""))
 
 
+def is_public_hostname(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    host = hostname.lower().rstrip(".")
+    if host in {"localhost"} or host.endswith(".localhost") or host.endswith(".local"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_global
+    except ValueError:
+        return True
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
+        parsed = urllib.parse.urlparse(newurl)
+        if parsed.scheme not in {"http", "https"} or not is_public_hostname(parsed.hostname):
+            raise urllib.error.HTTPError(newurl, code, "redirect to non-public host blocked", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+SAFE_OPENER = urllib.request.build_opener(SafeRedirectHandler)
+
+
 def host_matches(hostname: str, allowed: Iterable[str]) -> bool:
     host = hostname.lower().rstrip(".")
     for pattern in allowed:
@@ -174,6 +208,8 @@ def is_allowed_target(target: UrlTarget, config: dict[str, Any]) -> bool:
     if host_matches(parsed.hostname, allowed_hosts):
         return True
     if target.source in {"repo_homepage", "readme_link"} and bool(config.get("allow_repo_discovered_hosts", False)):
+        return True
+    if target.source == "venturedex_company" and bool(config.get("allow_venturedex_discovered_hosts", False)):
         return True
     return False
 
@@ -421,6 +457,251 @@ def collect_github_repo_checks(
     return checks, discovered_targets, meta
 
 
+def request_text(url: str, timeout: float, max_bytes: int, accept: str = "text/html,*/*;q=0.2") -> tuple[str, int, str]:
+    normalized = normalize_url(url)
+    if not normalized:
+        raise ValueError(f"invalid url: {url}")
+    parsed = urllib.parse.urlparse(normalized)
+    if not is_public_hostname(parsed.hostname):
+        raise ValueError(f"non-public host blocked: {parsed.hostname}")
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Accept": accept,
+    }
+    req = urllib.request.Request(normalized, headers=headers, method="GET")
+    with SAFE_OPENER.open(req, timeout=timeout) as resp:
+        body = resp.read(max_bytes)
+        charset = resp.headers.get_content_charset() or "utf-8"
+        return body.decode(charset, errors="replace"), len(body), resp.geturl()
+
+
+def iter_jsonld_nodes(value: Any) -> Iterable[dict[str, Any]]:
+    if isinstance(value, list):
+        for item in value:
+            yield from iter_jsonld_nodes(item)
+        return
+    if not isinstance(value, dict):
+        return
+    graph = value.get("@graph")
+    if isinstance(graph, list):
+        for item in graph:
+            yield from iter_jsonld_nodes(item)
+    yield value
+
+
+LD_JSON_RE = re.compile(
+    r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+    re.IGNORECASE | re.DOTALL,
+)
+STARTUP_HREF_RE = re.compile(r"href=[\"']([^\"']*/startups/[^\"']*)[\"']", re.IGNORECASE)
+
+
+def extract_jsonld_payloads(html: str) -> list[Any]:
+    payloads: list[Any] = []
+    for match in LD_JSON_RE.finditer(html):
+        text = match.group(1).strip()
+        if not text:
+            continue
+        with contextlib.suppress(json.JSONDecodeError):
+            payloads.append(json.loads(text))
+    return payloads
+
+
+def extract_venturedex_profiles(html: str, source_url: str) -> list[str]:
+    base = source_url.rstrip("/") + "/"
+    profiles: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None) -> None:
+        if not value:
+            return
+        url = normalize_url(urllib.parse.urljoin(base, value))
+        if not url:
+            return
+        parsed = urllib.parse.urlparse(url)
+        if parsed.netloc.lower().rstrip(".") != urllib.parse.urlparse(source_url).netloc.lower().rstrip("."):
+            return
+        if not parsed.path.startswith("/startups/"):
+            return
+        key = url.rstrip("/")
+        if key in seen:
+            return
+        seen.add(key)
+        profiles.append(key)
+
+    for payload in extract_jsonld_payloads(html):
+        for node in iter_jsonld_nodes(payload):
+            items = node.get("itemListElement")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    add(item.get("url"))
+
+    for match in STARTUP_HREF_RE.finditer(html):
+        add(match.group(1))
+    return profiles
+
+
+def extract_venturedex_profiles_from_sitemap(xml_text: str) -> list[str]:
+    profiles: list[str] = []
+    seen: set[str] = set()
+    root = ET.fromstring(xml_text)
+    for elem in root.iter():
+        if not elem.tag.endswith("loc") or not elem.text:
+            continue
+        url = normalize_url(elem.text)
+        if not url:
+            continue
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.path.startswith("/startups/"):
+            continue
+        key = url.rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        profiles.append(key)
+    return profiles
+
+
+def company_url_from_profile(profile_url: str, html: str, source_host: str) -> VentureDexStartup:
+    profile_name = urllib.parse.urlparse(profile_url).path.rstrip("/").rsplit("/", 1)[-1]
+    name = profile_name
+    for payload in extract_jsonld_payloads(html):
+        for node in iter_jsonld_nodes(payload):
+            node_type = node.get("@type")
+            if isinstance(node_type, list):
+                is_org = "Organization" in node_type
+            else:
+                is_org = node_type == "Organization"
+            if not is_org:
+                continue
+            url = normalize_url(node.get("url"))
+            parsed = urllib.parse.urlparse(url or "")
+            if not url or parsed.hostname == source_host:
+                continue
+            return VentureDexStartup(
+                name=str(node.get("name") or name),
+                profile_url=profile_url,
+                company_url=url,
+            )
+    return VentureDexStartup(name=name, profile_url=profile_url, company_url=None, error="company url not found")
+
+
+def collect_venturedex_targets(
+    config: dict[str, Any],
+    timeout: float,
+) -> tuple[list[UrlTarget], list[str], list[VentureDexStartup], dict[str, Any]]:
+    venture_config = config.get("venturedex", {})
+    source_url = normalize_url(str(venture_config.get("source_url") or "https://venturedex.co/")) or "https://venturedex.co/"
+    source_host = urllib.parse.urlparse(source_url).hostname or "venturedex.co"
+    source_root = f"{urllib.parse.urlparse(source_url).scheme}://{urllib.parse.urlparse(source_url).netloc}/"
+    sitemap_url = urllib.parse.urljoin(source_root, "sitemap.xml")
+    max_profiles = int(venture_config.get("profile_max", 80))
+    max_companies = int(venture_config.get("company_max", 50))
+    profile_concurrency = max(1, int(venture_config.get("profile_concurrency", 6)))
+    discovery_page_bytes = int(venture_config.get("profile_page_max_bytes", 768 * 1024))
+
+    discovery_bytes = 0
+    discovery_errors: list[str] = []
+    profiles: list[str] = []
+    try:
+        sitemap_text, byte_count, _final_url = request_text(
+            sitemap_url,
+            timeout=timeout,
+            max_bytes=int(venture_config.get("sitemap_max_bytes", 1024 * 1024)),
+            accept="application/xml,text/xml,*/*;q=0.2",
+        )
+        discovery_bytes += byte_count
+        profiles = extract_venturedex_profiles_from_sitemap(sitemap_text)
+    except Exception as exc:
+        discovery_errors.append(f"sitemap: {type(exc).__name__}: {str(exc)[:160]}")
+
+    if not profiles:
+        try:
+            homepage_text, byte_count, _final_url = request_text(
+                source_root,
+                timeout=timeout,
+                max_bytes=int(venture_config.get("homepage_max_bytes", 2 * 1024 * 1024)),
+            )
+            discovery_bytes += byte_count
+            profiles = extract_venturedex_profiles(homepage_text, source_root)
+        except Exception as exc:
+            discovery_errors.append(f"homepage: {type(exc).__name__}: {str(exc)[:160]}")
+
+    profiles = profiles[:max_profiles]
+    startups: list[VentureDexStartup] = []
+    if profiles:
+        def fetch_profile(profile_url: str) -> VentureDexStartup:
+            try:
+                html, byte_count, final_url = request_text(
+                    profile_url,
+                    timeout=timeout,
+                    max_bytes=discovery_page_bytes,
+                )
+                nonlocal_discovery_bytes.reserve(byte_count)
+                return company_url_from_profile(final_url.rstrip("/"), html, source_host)
+            except Exception as exc:
+                return VentureDexStartup(
+                    name=urllib.parse.urlparse(profile_url).path.rstrip("/").rsplit("/", 1)[-1],
+                    profile_url=profile_url,
+                    company_url=None,
+                    error=type(exc).__name__ + ": " + str(exc)[:160],
+                )
+
+        class CounterBudget:
+            def __init__(self) -> None:
+                self.used = 0
+                self._lock = threading.Lock()
+
+            def reserve(self, value: int) -> None:
+                with self._lock:
+                    self.used += max(0, value)
+
+        nonlocal_discovery_bytes = CounterBudget()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(profile_concurrency, len(profiles))) as pool:
+            future_map = {pool.submit(fetch_profile, profile_url): profile_url for profile_url in profiles}
+            for future in concurrent.futures.as_completed(future_map):
+                startups.append(future.result())
+        discovery_bytes += nonlocal_discovery_bytes.used
+
+    profile_order = {url: index for index, url in enumerate(profiles)}
+    startups.sort(key=lambda item: profile_order.get(item.profile_url, len(profile_order)))
+    company_targets: list[UrlTarget] = []
+    seen_companies: set[str] = set()
+    for startup in startups:
+        if not startup.company_url:
+            continue
+        key = startup.company_url.rstrip("/")
+        if key in seen_companies:
+            continue
+        seen_companies.add(key)
+        company_targets.append(
+            UrlTarget(url=startup.company_url, source="venturedex_company", repo=startup.name, critical=False)
+        )
+        if len(company_targets) >= max_companies:
+            break
+
+    source_targets = [
+        UrlTarget(url=source_root, source="venturedex_source", repo=None, critical=True),
+        UrlTarget(url=sitemap_url, source="venturedex_source", repo=None, critical=False),
+    ]
+    targets, rejected = filter_allowed_targets(source_targets + company_targets, config)
+    meta = {
+        "source_url": source_root,
+        "sitemap_url": sitemap_url,
+        "profile_count": len(profiles),
+        "profile_pages_checked": len(startups),
+        "company_url_count": len([s for s in startups if s.company_url]),
+        "company_target_count": len(company_targets),
+        "discovery_bytes_read": discovery_bytes,
+        "discovery_errors": discovery_errors,
+        "profile_max": max_profiles,
+        "company_max": max_companies,
+    }
+    return targets, rejected, startups, meta
+
+
 def read_limited(resp: Any, budget: ByteBudget, per_request_limit: int) -> int:
     total = 0
     chunk_size = 32 * 1024
@@ -473,8 +754,11 @@ def fetch_url(target: UrlTarget, timeout: float, budget: ByteBudget, per_request
         error = "byte budget exhausted"
     else:
         try:
+            parsed = urllib.parse.urlparse(url)
+            if not is_public_hostname(parsed.hostname):
+                raise ValueError(f"non-public host blocked: {parsed.hostname}")
             req = urllib.request.Request(url, headers=headers, method="GET")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with SAFE_OPENER.open(req, timeout=timeout) as resp:
                 status = int(resp.status)
                 final_url = resp.geturl()
                 bytes_read = read_limited(resp, budget, per_request_limit)
@@ -487,7 +771,7 @@ def fetch_url(target: UrlTarget, timeout: float, budget: ByteBudget, per_request
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     ok = status is not None and 200 <= status < 400 and error is None
-    cert_sources = {"explicit", "repo_homepage"}
+    cert_sources = {"explicit", "repo_homepage", "venturedex_company", "venturedex_source"}
     return UrlResult(
         url=url,
         source=target.source,
@@ -597,6 +881,10 @@ def summarize(
     }
 
 
+def startup_to_dict(startup: VentureDexStartup) -> dict[str, Any]:
+    return dataclasses.asdict(startup)
+
+
 def build_targets(
     config: dict[str, Any],
     repos: list[RepoSummary],
@@ -695,6 +983,18 @@ def render_markdown(report: dict[str, Any]) -> str:
             lines.append(f"- `{item['elapsed_ms']}ms` {item['url']}")
     else:
         lines.append("- None")
+    venture = report.get("venturedex") or {}
+    if venture:
+        lines += ["", "## VentureDex Discovery", ""]
+        lines.append(f"- Source: `{venture.get('source_url')}`")
+        lines.append(f"- Profiles checked: `{venture.get('profile_pages_checked', 0)}`")
+        lines.append(f"- Company URLs found: `{venture.get('company_url_count', 0)}`")
+        lines.append(f"- Company targets queued: `{venture.get('company_target_count', 0)}`")
+        lines.append(f"- Discovery bytes read: `{venture.get('discovery_bytes_read', 0)}`")
+        errors = venture.get("discovery_errors") or []
+        if errors:
+            for error in errors[:10]:
+                lines.append(f"- Discovery warning: `{error}`")
     lines += ["", "## Recently Updated Repositories", ""]
     repos = sorted(report["repositories"], key=lambda r: r.get("pushed_at") or "", reverse=True)
     for repo in repos[:20]:
@@ -727,19 +1027,28 @@ def run(args: argparse.Namespace) -> int:
     run_id_seed = f"{started_at}:{args.mode}:{owner}".encode("utf-8")
     run_id = hashlib.sha256(run_id_seed).hexdigest()[:12]
 
-    try:
-        repos, github_meta = fetch_repositories(owner, timeout=timeout, max_pages=int(policy.get("github_max_pages", 5)))
-    except Exception as exc:
+    venture_meta: dict[str, Any] = {}
+    venture_startups: list[VentureDexStartup] = []
+    if args.mode == "venture":
         repos = []
-        github_meta = {
-            "pages": 0,
-            "authenticated": bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("WATCHTOWER_GITHUB_TOKEN")),
-            "error": type(exc).__name__ + ": " + str(exc)[:180],
-        }
+        repo_checks = []
+        discovered_targets = []
+        github_meta = {"skipped": True, "reason": "venture mode"}
+        targets, rejected_urls, venture_startups, venture_meta = collect_venturedex_targets(config, timeout)
+    else:
+        try:
+            repos, github_meta = fetch_repositories(owner, timeout=timeout, max_pages=int(policy.get("github_max_pages", 5)))
+        except Exception as exc:
+            repos = []
+            github_meta = {
+                "pages": 0,
+                "authenticated": bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("WATCHTOWER_GITHUB_TOKEN")),
+                "error": type(exc).__name__ + ": " + str(exc)[:180],
+            }
 
-    repo_checks, discovered_targets, github_detail_meta = collect_github_repo_checks(owner, repos, args.mode, timeout, policy)
-    github_meta.update(github_detail_meta)
-    targets, rejected_urls = build_targets(config, repos, args.mode, discovered_targets)
+        repo_checks, discovered_targets, github_detail_meta = collect_github_repo_checks(owner, repos, args.mode, timeout, policy)
+        github_meta.update(github_detail_meta)
+        targets, rejected_urls = build_targets(config, repos, args.mode, discovered_targets)
     mode_max_urls = policy.get("mode_max_urls", {})
     configured_max_urls = mode_max_urls.get(args.mode)
     if configured_max_urls is not None:
@@ -768,6 +1077,8 @@ def run(args: argparse.Namespace) -> int:
             "config": str(Path(args.config).resolve()),
         },
         "github": github_meta,
+        "venturedex": venture_meta,
+        "venturedex_startups": [startup_to_dict(s) for s in venture_startups],
         "summary": summarize(repos, results, repo_checks, github_meta, slow_url_ms=int(policy.get("slow_url_ms", 8000))),
         "repositories": [repo_to_dict(r) for r in sorted(repos, key=lambda r: r.name.lower())],
         "urls": [result_to_dict(r) for r in results],
@@ -806,7 +1117,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run_p = sub.add_parser("run", help="run a bounded health check")
-    run_p.add_argument("--mode", choices=["light", "daily", "weekly"], default="light")
+    run_p.add_argument("--mode", choices=["light", "daily", "weekly", "venture"], default="light")
     run_p.add_argument("--config", default="config/targets.json")
     run_p.add_argument("--output-dir", default="reports")
     run_p.add_argument("--max-urls", type=int)

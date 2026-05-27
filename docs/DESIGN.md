@@ -7,6 +7,9 @@ Digidai public project ecosystem. The server periodically checks GitHub project
 metadata, product URLs, certificates, response times, and local resource metrics.
 Daily and weekly modes also sample README-discovered links and recent GitHub
 workflow status for active non-fork repositories.
+The `venture` mode uses VentureDex as a curated source list, extracts canonical
+company homepages from startup profile JSON-LD, and checks those homepages every
+15 minutes as observed third-party targets.
 
 ## Non-Goals
 
@@ -34,10 +37,14 @@ Network controls:
 - Host must match `config/targets.json` allowlist.
 - Repo homepages and README-discovered links can use broader hosts, but social,
   link-shortener, and known bot-hostile hosts stay blocked.
+- VentureDex-discovered company homepages can use broader hosts only when the
+  URL is extracted from `https://venturedex.co/` startup profile structured data.
+- Dynamically discovered targets are blocked when they use localhost-style host
+  names or non-global IP literals.
 - Concurrency defaults to 3.
 - Per-request body read defaults to 2 MiB.
-- Per-run byte budgets default to 8 MiB, 128 MiB, and 384 MiB for light, daily,
-  and weekly mode.
+- Per-run byte budgets default to 8 MiB, 128 MiB, 384 MiB, and 96 MiB for
+  light, daily, weekly, and venture mode.
 - Per-mode URL caps keep expanded discovery bounded.
 - GitHub detail checks use an API request budget so the server does not burn
   through unauthenticated rate limits.
@@ -53,7 +60,7 @@ authorized key should use a forced command:
 command="/opt/project-watchtower/scripts/forced-command.sh",no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc ssh-ed25519 ...
 ```
 
-That script accepts only `light`, `daily`, `weekly`, and `status`.
+That script accepts only `light`, `daily`, `weekly`, `venture`, and `status`.
 GitHub-triggered runs tolerate a `busy` lock and return a bounded JSON response
 instead of failing or stacking parallel checks.
 
@@ -73,6 +80,7 @@ The JSON report includes:
 - rejected URL list
 - README-discovered URL count
 - GitHub README/workflow check results
+- VentureDex discovery metadata and extracted company homepage targets
 - local system metrics
 - resource budget usage
 

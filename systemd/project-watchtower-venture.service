@@ -1,5 +1,5 @@
 [Unit]
-Description=Project Watchtower light health check
+Description=Project Watchtower VentureDex company homepage poll
 Wants=network-online.target
 After=network-online.target
 
@@ -9,9 +9,9 @@ User=watchtower
 Group=watchtower
 WorkingDirectory=/opt/project-watchtower
 Environment=WATCHTOWER_BUSY_OK=1
-ExecStart=/opt/project-watchtower/scripts/watchtower-run light
+ExecStart=/opt/project-watchtower/scripts/watchtower-run venture
 Nice=10
-TimeoutStartSec=180
+TimeoutStartSec=600
 MemoryMax=350M
 CPUQuota=30%
 NoNewPrivileges=true

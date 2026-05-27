@@ -77,8 +77,10 @@ sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-light.se
 sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-light.timer /etc/systemd/system/project-watchtower-light.timer
 sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-daily.service /etc/systemd/system/project-watchtower-daily.service
 sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-daily.timer /etc/systemd/system/project-watchtower-daily.timer
+sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-venture.service /etc/systemd/system/project-watchtower-venture.service
+sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-venture.timer /etc/systemd/system/project-watchtower-venture.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now project-watchtower-light.timer project-watchtower-daily.timer
+sudo systemctl enable --now project-watchtower-light.timer project-watchtower-daily.timer project-watchtower-venture.timer
 
 if ! pgrep -u watchtower -f 'watchtower.cli run' >/dev/null 2>&1; then
   sudo rm -rf /tmp/project-watchtower.lock

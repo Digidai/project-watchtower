@@ -8,6 +8,7 @@ Type=oneshot
 User=watchtower
 Group=watchtower
 WorkingDirectory=/opt/project-watchtower
+Environment=WATCHTOWER_BUSY_OK=1
 ExecStart=/opt/project-watchtower/scripts/watchtower-run daily
 Nice=10
 TimeoutStartSec=900
