@@ -3,7 +3,8 @@ Description=Run Project Watchtower VentureDex polling every 15 minutes
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=15min
+OnCalendar=*-*-* *:07/15:00
+AccuracySec=30s
 Persistent=true
 
 [Install]

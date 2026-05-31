@@ -83,7 +83,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now project-watchtower-light.timer project-watchtower-daily.timer project-watchtower-venture.timer
 
 if ! pgrep -u watchtower -f 'watchtower.cli run' >/dev/null 2>&1; then
-  sudo rm -rf /tmp/project-watchtower.lock
+  sudo rm -rf /tmp/project-watchtower.lock /var/lib/project-watchtower/project-watchtower.lock
 fi
 sudo -u watchtower /opt/project-watchtower/scripts/watchtower-run light
 REMOTE

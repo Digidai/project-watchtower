@@ -28,7 +28,7 @@ Resource controls:
 - `nice -n 10`
 - systemd `CPUQuota=30%`
 - systemd `MemoryMax=350M`
-- one-process lock via `/tmp/project-watchtower.lock`
+- one-process lock via `/var/lib/project-watchtower/project-watchtower.lock`
 - Python request timeout and byte budget
 
 Network controls:
