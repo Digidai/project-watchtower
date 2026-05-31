@@ -3,6 +3,7 @@
 Project Watchtower is a bounded monitoring agent for the public Digidai project surface.
 It inventories GitHub repositories, checks known project URLs, records system/network
 metrics, and writes auditable JSON/Markdown reports.
+It also serves a read-only dashboard from the generated report directory.
 
 The implementation is intentionally conservative:
 
@@ -43,6 +44,12 @@ WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
 - `weekly`: deeper checks with a larger URL and byte budget.
 - `venture-discover`: refreshes the VentureDex profile/company cache hourly.
 - `venture-check`: checks a rotating cached batch of VentureDex company homepages every 10 minutes.
+
+## Dashboard
+
+The dashboard service serves `/var/lib/project-watchtower/reports/index.html` on HTTP port `80`.
+The page aggregates the newest report per mode, self-check service state, resource metrics,
+and current failures.
 
 ## GitHub Actions Setup
 

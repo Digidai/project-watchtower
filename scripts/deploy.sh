@@ -116,12 +116,19 @@ sudo -u watchtower env WATCHTOWER_BUSY_OK=1 WATCHTOWER_MAX_URLS=3 WATCHTOWER_MAX
 sudo -u watchtower env WATCHTOWER_BUSY_OK=1 WATCHTOWER_MAX_URLS=2 WATCHTOWER_MAX_BYTES=12582912 /opt/project-watchtower/scripts/watchtower-run venture-discover
 
 sudo systemctl enable --now \
+  project-watchtower-dashboard.service \
   project-watchtower-core.timer \
   project-watchtower-self.timer \
   project-watchtower-github-lite.timer \
   project-watchtower-daily.timer \
   project-watchtower-venture-check.timer \
   project-watchtower-venture-discover.timer
+sudo systemctl restart project-watchtower-dashboard.service
+if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+  sudo firewall-cmd --permanent --add-service=http >/dev/null
+  sudo firewall-cmd --permanent --remove-port=8765/tcp >/dev/null 2>&1 || true
+  sudo firewall-cmd --reload >/dev/null
+fi
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   if ! pgrep -u watchtower -f 'watchtower.cli run' >/dev/null 2>&1; then
     break

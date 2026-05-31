@@ -14,6 +14,7 @@ import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
+import html
 import ipaddress
 import json
 import os
@@ -1164,7 +1165,170 @@ def write_reports(output_dir: Path, report: dict[str, Any], keep: int = 2000) ->
     latest_md.write_text(md_text, encoding="utf-8")
     archive_json.write_text(json_text + "\n", encoding="utf-8")
     archive_md.write_text(md_text, encoding="utf-8")
+    (output_dir / "index.html").write_text(render_dashboard(output_dir, report), encoding="utf-8")
     cleanup_old_reports(output_dir, keep=keep)
+
+
+def report_mode(report: dict[str, Any]) -> str:
+    return str(report.get("run", {}).get("mode") or "unknown")
+
+
+def load_latest_reports_by_mode(output_dir: Path, current: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    reports: dict[str, tuple[float, dict[str, Any]]] = {report_mode(current): (time.time(), current)}
+    for path in output_dir.glob("*.json"):
+        if path.name == "latest.json":
+            continue
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        mode = report_mode(item)
+        mtime = path.stat().st_mtime
+        if mode not in reports or mtime > reports[mode][0]:
+            reports[mode] = (mtime, item)
+    return {mode: item for mode, (_mtime, item) in reports.items()}
+
+
+def dashboard_class(status: str | None) -> str:
+    if status == "ok":
+        return "ok"
+    if status == "fail":
+        return "fail"
+    if status == "warn":
+        return "warn"
+    return "muted"
+
+
+def fmt_bytes(value: Any) -> str:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    units = ["B", "KiB", "MiB", "GiB"]
+    for unit in units:
+        if n < 1024 or unit == units[-1]:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+        n /= 1024
+    return "-"
+
+
+def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
+    reports = load_latest_reports_by_mode(output_dir, current)
+    mode_order = ["core", "self", "github-lite", "venture-check", "venture-discover", "daily", "weekly"]
+    ordered_modes = [mode for mode in mode_order if mode in reports] + sorted(set(reports) - set(mode_order))
+    latest_self = reports.get("self") or current
+    system = latest_self.get("system") if isinstance(latest_self.get("system"), dict) else {}
+    mem = system.get("meminfo") if isinstance(system.get("meminfo"), dict) else {}
+    disk = system.get("disk_root") if isinstance(system.get("disk_root"), dict) else {}
+    loadavg = system.get("loadavg") or []
+
+    rows: list[str] = []
+    for mode in ordered_modes:
+        report = reports[mode]
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        budget = report.get("resource_budget") if isinstance(report.get("resource_budget"), dict) else {}
+        run = report.get("run") if isinstance(report.get("run"), dict) else {}
+        status = str(summary.get("status") or "unknown")
+        rows.append(
+            "<tr>"
+            f"<td><strong>{html.escape(mode)}</strong></td>"
+            f"<td><span class='pill {dashboard_class(status)}'>{html.escape(status)}</span></td>"
+            f"<td>{html.escape(str(run.get('completed_at') or '-'))}</td>"
+            f"<td>{html.escape(str(summary.get('url_count', 0)))}</td>"
+            f"<td>{html.escape(str(summary.get('failed_url_count', 0)))}</td>"
+            f"<td>{html.escape(str(summary.get('failed_self_check_count', 0)))}</td>"
+            f"<td>{html.escape(fmt_bytes(budget.get('bytes_read')))}</td>"
+            "</tr>"
+        )
+
+    service_cards: list[str] = []
+    for check in latest_self.get("self_checks", []) or []:
+        if not isinstance(check, dict):
+            continue
+        name = str(check.get("name") or "")
+        status = str(check.get("status") or ("ok" if check.get("ok") else "warn"))
+        service_cards.append(
+            f"<div class='check'><span class='pill {dashboard_class(status)}'>{html.escape(status)}</span>"
+            f"<span>{html.escape(name)}</span><small>{html.escape(str(check.get('detail') or ''))}</small></div>"
+        )
+
+    failure_items: list[str] = []
+    for mode in ordered_modes:
+        report = reports[mode]
+        for item in report.get("urls", []) or []:
+            if not isinstance(item, dict) or item.get("ok"):
+                continue
+            failure_items.append(
+                f"<li><span class='mode'>{html.escape(mode)}</span> "
+                f"<strong>{html.escape(str(item.get('status')))}</strong> "
+                f"{html.escape(str(item.get('source') or 'url'))} "
+                f"{html.escape(str(item.get('repo') or ''))}<br><code>{html.escape(str(item.get('url') or ''))}</code>"
+                f"<br><small>{html.escape(str(item.get('error') or ''))}</small></li>"
+            )
+    if not failure_items:
+        failure_items.append("<li>No current URL failures across latest mode reports.</li>")
+
+    generated = html.escape(str(current.get("run", {}).get("completed_at") or utc_now()))
+    mem_available = fmt_bytes(mem.get("MemAvailable"))
+    mem_total = fmt_bytes(mem.get("MemTotal"))
+    disk_free = fmt_bytes(disk.get("free"))
+    disk_total = fmt_bytes(disk.get("total"))
+    load_text = ", ".join(f"{float(v):.2f}" for v in loadavg[:3]) if isinstance(loadavg, (list, tuple)) else "-"
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <title>Project Watchtower</title>
+  <style>
+    :root {{ color-scheme: light dark; --ok:#107c41; --warn:#a45b00; --fail:#b42318; --line:#d0d7de; --muted:#57606a; }}
+    body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f6f8fa; color:#1f2328; }}
+    main {{ max-width:1120px; margin:0 auto; padding:28px 18px 48px; }}
+    header {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-end; border-bottom:1px solid var(--line); padding-bottom:18px; }}
+    h1 {{ margin:0; font-size:28px; letter-spacing:0; }}
+    h2 {{ margin:28px 0 12px; font-size:18px; letter-spacing:0; }}
+    .muted, small {{ color:var(--muted); }}
+    .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:18px; }}
+    .metric, .panel {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; }}
+    .metric strong {{ display:block; font-size:20px; margin-top:4px; }}
+    table {{ width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden; }}
+    th, td {{ padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; font-size:14px; }}
+    th {{ background:#f0f3f6; color:#57606a; font-weight:600; }}
+    tr:last-child td {{ border-bottom:0; }}
+    .pill {{ display:inline-block; min-width:42px; text-align:center; border-radius:999px; padding:3px 8px; font-size:12px; font-weight:700; color:#fff; }}
+    .ok {{ background:var(--ok); }} .warn {{ background:var(--warn); }} .fail {{ background:var(--fail); }} .muted {{ background:#6e7781; }}
+    .checks {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:8px; }}
+    .check {{ display:grid; grid-template-columns:58px 1fr; gap:8px; align-items:center; background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px; }}
+    .check small {{ grid-column:2; }}
+    li {{ margin:0 0 12px; }} code {{ word-break:break-all; }} .mode {{ color:var(--muted); font-weight:700; }}
+    @media (prefers-color-scheme: dark) {{ body {{ background:#0d1117; color:#e6edf3; }} .metric,.panel,table,.check {{ background:#161b22; }} th {{ background:#21262d; }} }}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Project Watchtower</h1><div class="muted">Generated {generated}. Auto-refreshes every 60 seconds.</div></div>
+    <div class="muted">Host: {html.escape(str(system.get('hostname') or '-'))}</div>
+  </header>
+  <section class="grid">
+    <div class="metric">Memory available<strong>{html.escape(mem_available)}</strong><small>of {html.escape(mem_total)}</small></div>
+    <div class="metric">Disk free<strong>{html.escape(disk_free)}</strong><small>of {html.escape(disk_total)}</small></div>
+    <div class="metric">Load average<strong>{html.escape(load_text)}</strong><small>1m, 5m, 15m</small></div>
+  </section>
+  <h2>Mode Status</h2>
+  <table><thead><tr><th>Mode</th><th>Status</th><th>Completed</th><th>URLs</th><th>URL Fail</th><th>Self Fail</th><th>Bytes</th></tr></thead><tbody>
+    {''.join(rows)}
+  </tbody></table>
+  <h2>Service Checks</h2>
+  <div class="checks">{''.join(service_cards) if service_cards else "<div class='panel'>No self-check report yet.</div>"}</div>
+  <h2>Current Failures</h2>
+  <div class="panel"><ul>{''.join(failure_items)}</ul></div>
+</main>
+</body>
+</html>
+"""
 
 
 def render_markdown(report: dict[str, Any]) -> str:

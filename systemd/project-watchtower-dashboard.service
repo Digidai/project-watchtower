@@ -1,0 +1,23 @@
+[Unit]
+Description=Project Watchtower status dashboard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=watchtower
+Group=watchtower
+WorkingDirectory=/opt/project-watchtower
+Environment=PYTHONPATH=/opt/project-watchtower
+ExecStart=/usr/bin/python3 -m watchtower.cli serve --output-dir /var/lib/project-watchtower/reports --host 0.0.0.0 --port 80
+Restart=always
+RestartSec=5
+MemoryMax=160M
+CPUQuota=20%
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/project-watchtower/reports

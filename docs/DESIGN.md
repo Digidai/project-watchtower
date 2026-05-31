@@ -78,6 +78,7 @@ Reports are written under `/var/lib/project-watchtower/reports`:
 
 - `latest.json`
 - `latest.md`
+- `index.html`
 - archived reports by run id
 
 The JSON report includes:

@@ -144,6 +144,7 @@
     "self_expected_timers": [
       "project-watchtower-core.timer",
       "project-watchtower-self.timer",
+      "project-watchtower-dashboard.service",
       "project-watchtower-github-lite.timer",
       "project-watchtower-daily.timer",
       "project-watchtower-venture-check.timer",
