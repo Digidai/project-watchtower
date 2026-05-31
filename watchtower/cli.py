@@ -933,6 +933,7 @@ def collect_system_metrics() -> dict[str, Any]:
     metrics: dict[str, Any] = {
         "timestamp": utc_now(),
         "hostname": socket.gethostname(),
+        "cpu_count": os.cpu_count() or 1,
         "loadavg": os.getloadavg() if hasattr(os, "getloadavg") else None,
         "disk_root": shutil.disk_usage("/")._asdict(),
     }
@@ -1190,13 +1191,32 @@ def load_latest_reports_by_mode(output_dir: Path, current: dict[str, Any]) -> di
 
 
 def dashboard_class(status: str | None) -> str:
-    if status == "ok":
+    normalized = str(status or "").lower()
+    if normalized in {"ok", "active", "healthy", "success"}:
         return "ok"
-    if status == "fail":
+    if normalized in {"fail", "failed", "failure", "error", "inactive"}:
         return "fail"
-    if status == "warn":
+    if normalized in {"warn", "warning", "degraded", "busy"}:
         return "warn"
     return "muted"
+
+
+def safe_int(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def fmt_number(value: Any) -> str:
+    return f"{safe_int(value):,}"
 
 
 def fmt_bytes(value: Any) -> str:
@@ -1212,15 +1232,537 @@ def fmt_bytes(value: Any) -> str:
     return "-"
 
 
+def fmt_time(value: Any) -> str:
+    if not value:
+        return "-"
+    return str(value).replace("T", " ").replace("+00:00", " UTC").replace("Z", " UTC")
+
+
+def fmt_percent(part: Any, total: Any) -> str:
+    denominator = safe_float(total)
+    if denominator <= 0:
+        return "-"
+    pct = max(0.0, min(100.0, safe_float(part) / denominator * 100.0))
+    return f"{pct:.0f}%"
+
+
+def dashboard_percent(part: Any, total: Any) -> float:
+    denominator = safe_float(total)
+    if denominator <= 0:
+        return 0.0
+    return max(0.0, min(100.0, safe_float(part) / denominator * 100.0))
+
+
+DASHBOARD_CSS = """
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f2;
+      --surface: #ffffff;
+      --surface-subtle: #f3f5f0;
+      --text: #1c1f23;
+      --muted: #667085;
+      --border: #d8ded2;
+      --primary: #2563eb;
+      --success: #16823a;
+      --warning: #b45309;
+      --danger: #c0262d;
+      --teal: #0f766e;
+      --shadow: 0 12px 32px rgba(28, 31, 35, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    a { color: inherit; }
+    .app-shell {
+      width: min(1240px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 24px 0 44px;
+    }
+    .topbar {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 6px 0 18px;
+    }
+    .eyebrow {
+      margin: 0 0 6px;
+      color: var(--teal);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(26px, 3vw, 34px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 28px 0 12px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+    .top-meta {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .link-pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 10px;
+      text-decoration: none;
+      background: var(--surface);
+      font-weight: 700;
+      color: var(--text);
+    }
+    .status-band {
+      --accent: var(--primary);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: center;
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+    .tone-ok { --accent: var(--success); }
+    .tone-warn { --accent: var(--warning); }
+    .tone-fail { --accent: var(--danger); }
+    .tone-muted { --accent: var(--primary); }
+    .status-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 6px;
+    }
+    .status-title strong {
+      font-size: 20px;
+      line-height: 1.2;
+    }
+    .status-copy {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .status-facts {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(110px, 1fr));
+      gap: 8px;
+      min-width: min(420px, 100%);
+    }
+    .fact {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-subtle);
+      padding: 9px 10px;
+    }
+    .fact span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .fact strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .metric-card {
+      --accent: var(--primary);
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-top: 3px solid var(--accent);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 13px;
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .metric-value {
+      margin-top: 8px;
+      font-size: 23px;
+      font-weight: 800;
+      line-height: 1.08;
+      overflow-wrap: anywhere;
+    }
+    .metric-detail {
+      min-height: 34px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .progress {
+      height: 6px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--surface-subtle);
+      margin-top: 10px;
+    }
+    .progress span {
+      display: block;
+      width: var(--progress);
+      height: 100%;
+      background: var(--accent);
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 28px;
+    }
+    .section-header h2 {
+      margin: 0;
+    }
+    .section-header small {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+    .table-shell {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    table {
+      width: 100%;
+      min-width: 840px;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+    th {
+      background: var(--surface-subtle);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    tr:last-child td { border-bottom: 0; }
+    td small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .mode-name {
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .nowrap { white-space: nowrap; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 46px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1;
+      text-transform: capitalize;
+      white-space: nowrap;
+    }
+    .chip.ok { background: var(--success); }
+    .chip.warn { background: var(--warning); }
+    .chip.fail { background: var(--danger); }
+    .chip.muted { background: #697586; }
+    .service-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+      gap: 10px;
+    }
+    .service-card {
+      --accent: var(--primary);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 11px;
+    }
+    .service-card strong {
+      display: block;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .service-card small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .issue-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .issue-item {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 11px;
+    }
+    .issue-item strong,
+    .issue-item small,
+    .issue-item code {
+      display: block;
+    }
+    .issue-item strong {
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .issue-item small {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .issue-item code {
+      margin-top: 6px;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .empty-state {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 16px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 720px) {
+      .app-shell { width: min(100% - 20px, 1240px); padding-top: 14px; }
+      .topbar,
+      .status-band {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+      .topbar { align-items: start; }
+      .top-meta { justify-content: flex-start; }
+      .status-facts {
+        grid-template-columns: 1fr;
+        min-width: 0;
+      }
+      .metric-grid {
+        grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      }
+      .metric-value { font-size: 20px; }
+      .section-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .section-header small { text-align: left; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #10120f;
+        --surface: #181b17;
+        --surface-subtle: #20251e;
+        --text: #ecefeb;
+        --muted: #a8b2a1;
+        --border: #343b31;
+        --primary: #70a5ff;
+        --success: #3fbf68;
+        --warning: #d89b37;
+        --danger: #ee6468;
+        --teal: #46b7a9;
+        --shadow: none;
+      }
+      .link-pill { background: var(--surface-subtle); }
+    }
+"""
+
+
 def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
     reports = load_latest_reports_by_mode(output_dir, current)
     mode_order = ["core", "self", "github-lite", "venture-check", "venture-discover", "daily", "weekly"]
+    allowed_modes = set(RUN_MODES) | {report_mode(current)}
+    reports = {mode: report for mode, report in reports.items() if mode in allowed_modes}
     ordered_modes = [mode for mode in mode_order if mode in reports] + sorted(set(reports) - set(mode_order))
     latest_self = reports.get("self") or current
     system = latest_self.get("system") if isinstance(latest_self.get("system"), dict) else {}
     mem = system.get("meminfo") if isinstance(system.get("meminfo"), dict) else {}
     disk = system.get("disk_root") if isinstance(system.get("disk_root"), dict) else {}
     loadavg = system.get("loadavg") or []
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value if value is not None else "-"))
+
+    summaries = [
+        report.get("summary")
+        for report in (reports[mode] for mode in ordered_modes)
+        if isinstance(report.get("summary"), dict)
+    ]
+    ok_count = sum(1 for summary in summaries if summary.get("status") == "ok")
+    warn_count = sum(1 for summary in summaries if summary.get("status") == "warn")
+    fail_count = sum(1 for summary in summaries if summary.get("status") == "fail")
+    total_urls = sum(safe_int(summary.get("url_count")) for summary in summaries)
+    total_url_failures = sum(safe_int(summary.get("failed_url_count")) for summary in summaries)
+    total_critical_url_failures = sum(safe_int(summary.get("failed_critical_url_count")) for summary in summaries)
+    total_self_failures = sum(safe_int(summary.get("failed_self_check_count")) for summary in summaries)
+    total_repo_failures = sum(safe_int(summary.get("failed_repo_check_count")) for summary in summaries)
+    total_failures = total_url_failures + total_self_failures + total_repo_failures
+    total_bytes_read = sum(
+        safe_int((reports[mode].get("resource_budget") or {}).get("bytes_read"))
+        for mode in ordered_modes
+        if isinstance(reports[mode].get("resource_budget"), dict)
+    )
+    overall_status = "fail" if fail_count else "warn" if warn_count else "ok"
+    overall_label = {"ok": "Healthy", "warn": "Needs attention", "fail": "Failing"}[overall_status]
+
+    cpu_count = max(1, safe_int(system.get("cpu_count")) or (os.cpu_count() or 1))
+    one_min_load = safe_float(loadavg[0]) if isinstance(loadavg, (list, tuple)) and loadavg else 0.0
+    load_text = ", ".join(f"{safe_float(v):.2f}" for v in loadavg[:3]) if isinstance(loadavg, (list, tuple)) else "-"
+    mem_available = safe_int(mem.get("MemAvailable"))
+    mem_total = safe_int(mem.get("MemTotal"))
+    disk_free = safe_int(disk.get("free"))
+    disk_total = safe_int(disk.get("total"))
+    mem_pct = dashboard_percent(mem_available, mem_total)
+    disk_pct = dashboard_percent(disk_free, disk_total)
+    raw_load_pct = one_min_load / cpu_count * 100.0 if cpu_count else 0.0
+    load_pct = max(0.0, min(100.0, raw_load_pct))
+    memory_value = fmt_bytes(mem_available) if mem_total > 0 else "-"
+    memory_detail = f"{fmt_percent(mem_available, mem_total)} available of {fmt_bytes(mem_total)}" if mem_total > 0 else "not reported"
+    memory_tone = "ok" if mem_pct >= 25 else "warn" if mem_pct >= 12 else "fail" if mem_total > 0 else "muted"
+    disk_tone = "ok" if disk_pct >= 25 else "warn" if disk_pct >= 10 else "fail" if disk_total > 0 else "muted"
+    load_tone = "ok" if raw_load_pct <= 75 else "warn" if raw_load_pct <= 120 else "fail" if loadavg else "muted"
+    networks = system.get("network_interfaces") if isinstance(system.get("network_interfaces"), dict) else {}
+    public_networks = {
+        name: data
+        for name, data in networks.items()
+        if name != "lo" and isinstance(data, dict)
+    }
+    rx_total = sum(safe_int(data.get("rx_bytes")) for data in public_networks.values())
+    tx_total = sum(safe_int(data.get("tx_bytes")) for data in public_networks.values())
+
+    def progress_bar(label: str, pct: float) -> str:
+        return (
+            f"<div class='progress' aria-label='{esc(label)}'>"
+            f"<span style='--progress:{pct:.1f}%'></span>"
+            "</div>"
+        )
+
+    def metric_card(label: str, value_html: str, detail: str, tone: str = "muted", progress: float | None = None) -> str:
+        progress_html = progress_bar(label, progress) if progress is not None else ""
+        return (
+            f"<article class='metric-card tone-{dashboard_class(tone)}'>"
+            f"<div class='metric-label'>{esc(label)}</div>"
+            f"<div class='metric-value'>{value_html}</div>"
+            f"<div class='metric-detail'>{esc(detail)}</div>"
+            f"{progress_html}"
+            "</article>"
+        )
+
+    metric_cards = [
+        metric_card(
+            "Overall",
+            f"<span class='chip {overall_status}'>{esc(overall_label)}</span>",
+            f"{ok_count} ok / {warn_count} warn / {fail_count} fail",
+            overall_status,
+        ),
+        metric_card(
+            "URL Checks",
+            esc(fmt_number(total_urls)),
+            f"{fmt_number(total_url_failures)} failing, {fmt_number(total_critical_url_failures)} critical",
+            "fail" if total_critical_url_failures else "warn" if total_url_failures else "ok",
+        ),
+        metric_card(
+            "Service Issues",
+            esc(fmt_number(total_self_failures)),
+            f"{fmt_number(total_repo_failures)} GitHub repo check issues",
+            "fail" if total_self_failures else "warn" if total_repo_failures else "ok",
+        ),
+        metric_card(
+            "Traffic Read",
+            esc(fmt_bytes(total_bytes_read)),
+            "bounded body bytes across latest reports",
+            "muted",
+        ),
+        metric_card(
+            "Memory",
+            esc(memory_value),
+            memory_detail,
+            memory_tone,
+            mem_pct if mem_total > 0 else None,
+        ),
+        metric_card(
+            "Disk",
+            esc(fmt_bytes(disk_free)),
+            f"{fmt_percent(disk_free, disk_total)} free of {fmt_bytes(disk_total)}",
+            disk_tone,
+            disk_pct if disk_total > 0 else None,
+        ),
+        metric_card(
+            "CPU Load",
+            esc(f"{one_min_load:.2f}"),
+            f"{cpu_count} CPU, load averages {load_text}",
+            load_tone,
+            load_pct if loadavg else None,
+        ),
+        metric_card(
+            "Network",
+            esc(fmt_bytes(rx_total + tx_total)),
+            f"RX {fmt_bytes(rx_total)} / TX {fmt_bytes(tx_total)} cumulative",
+            "muted",
+        ),
+    ]
 
     rows: list[str] = []
     for mode in ordered_modes:
@@ -1229,51 +1771,119 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
         budget = report.get("resource_budget") if isinstance(report.get("resource_budget"), dict) else {}
         run = report.get("run") if isinstance(report.get("run"), dict) else {}
         status = str(summary.get("status") or "unknown")
+        url_failures = safe_int(summary.get("failed_url_count"))
+        critical_failures = safe_int(summary.get("failed_critical_url_count"))
+        repo_checks = safe_int(summary.get("repo_check_count"))
+        repo_failures = safe_int(summary.get("failed_repo_check_count"))
+        self_checks = safe_int(summary.get("self_check_count"))
+        self_failures = safe_int(summary.get("failed_self_check_count"))
         rows.append(
-            "<tr>"
-            f"<td><strong>{html.escape(mode)}</strong></td>"
-            f"<td><span class='pill {dashboard_class(status)}'>{html.escape(status)}</span></td>"
-            f"<td>{html.escape(str(run.get('completed_at') or '-'))}</td>"
-            f"<td>{html.escape(str(summary.get('url_count', 0)))}</td>"
-            f"<td>{html.escape(str(summary.get('failed_url_count', 0)))}</td>"
-            f"<td>{html.escape(str(summary.get('failed_self_check_count', 0)))}</td>"
-            f"<td>{html.escape(fmt_bytes(budget.get('bytes_read')))}</td>"
+            f"<tr class='row-{dashboard_class(status)}'>"
+            f"<td><span class='mode-name'>{esc(mode)}</span></td>"
+            f"<td><span class='chip {dashboard_class(status)}'>{esc(status)}</span></td>"
+            f"<td class='nowrap'>{esc(fmt_time(run.get('completed_at')))}</td>"
+            f"<td>{esc(fmt_number(summary.get('url_count')))}</td>"
+            f"<td>{esc(fmt_number(url_failures))}<small>{esc(f'{critical_failures} critical')}</small></td>"
+            f"<td>{esc(fmt_number(repo_checks - repo_failures))}<small>{esc(f'of {repo_checks} ok')}</small></td>"
+            f"<td>{esc(fmt_number(self_checks - self_failures))}<small>{esc(f'of {self_checks} ok')}</small></td>"
+            f"<td>{esc(fmt_bytes(budget.get('bytes_read')))}</td>"
             "</tr>"
         )
 
+    service_checks = [
+        check
+        for check in (latest_self.get("self_checks", []) or [])
+        if isinstance(check, dict)
+    ]
+    service_checks.sort(key=lambda check: {"fail": 0, "warn": 1, "ok": 2}.get(dashboard_class(str(check.get("status"))), 3))
     service_cards: list[str] = []
-    for check in latest_self.get("self_checks", []) or []:
-        if not isinstance(check, dict):
-            continue
+    for check in service_checks:
         name = str(check.get("name") or "")
         status = str(check.get("status") or ("ok" if check.get("ok") else "warn"))
         service_cards.append(
-            f"<div class='check'><span class='pill {dashboard_class(status)}'>{html.escape(status)}</span>"
-            f"<span>{html.escape(name)}</span><small>{html.escape(str(check.get('detail') or ''))}</small></div>"
+            f"<article class='service-card tone-{dashboard_class(status)}'>"
+            f"<span class='chip {dashboard_class(status)}'>{esc(status)}</span>"
+            f"<div><strong>{esc(name)}</strong><small>{esc(check.get('detail') or '')}</small></div>"
+            "</article>"
         )
 
-    failure_items: list[str] = []
+    issues: list[tuple[str, str, str, str, str]] = []
+    for check in service_checks:
+        if check.get("ok"):
+            continue
+        tone = dashboard_class(str(check.get("status") or "warn"))
+        issues.append((tone, "self", "service", str(check.get("name") or ""), str(check.get("detail") or "")))
+
     for mode in ordered_modes:
         report = reports[mode]
         for item in report.get("urls", []) or []:
             if not isinstance(item, dict) or item.get("ok"):
                 continue
-            failure_items.append(
-                f"<li><span class='mode'>{html.escape(mode)}</span> "
-                f"<strong>{html.escape(str(item.get('status')))}</strong> "
-                f"{html.escape(str(item.get('source') or 'url'))} "
-                f"{html.escape(str(item.get('repo') or ''))}<br><code>{html.escape(str(item.get('url') or ''))}</code>"
-                f"<br><small>{html.escape(str(item.get('error') or ''))}</small></li>"
-            )
-    if not failure_items:
-        failure_items.append("<li>No current URL failures across latest mode reports.</li>")
+            tone = "fail" if item.get("critical") else "warn"
+            title = " ".join(part for part in [str(item.get("source") or "url"), str(item.get("repo") or "")] if part)
+            detail = " - ".join(part for part in [str(item.get("url") or ""), str(item.get("error") or item.get("status") or "")] if part)
+            issues.append((tone, mode, "url", title, detail))
+        for check in report.get("github_repo_checks", []) or []:
+            if not isinstance(check, dict) or check.get("ok"):
+                continue
+            title = " ".join(part for part in [str(check.get("repo") or ""), str(check.get("kind") or "")] if part)
+            detail = " - ".join(part for part in [str(check.get("status") or ""), str(check.get("detail") or ""), str(check.get("url") or "")] if part)
+            issues.append(("warn", mode, "github", title, detail))
 
-    generated = html.escape(str(current.get("run", {}).get("completed_at") or utc_now()))
-    mem_available = fmt_bytes(mem.get("MemAvailable"))
-    mem_total = fmt_bytes(mem.get("MemTotal"))
-    disk_free = fmt_bytes(disk.get("free"))
-    disk_total = fmt_bytes(disk.get("total"))
-    load_text = ", ".join(f"{float(v):.2f}" for v in loadavg[:3]) if isinstance(loadavg, (list, tuple)) else "-"
+    failure_items: list[str] = []
+    for tone, mode, kind, title, detail in issues[:80]:
+        failure_items.append(
+            "<li class='issue-item'>"
+            f"<span class='chip {tone}'>{esc(tone)}</span>"
+            "<div>"
+            f"<strong>{esc(title or kind)}</strong>"
+            f"<small>{esc(mode)} / {esc(kind)}</small>"
+            f"<code>{esc(detail)}</code>"
+            "</div>"
+            "</li>"
+        )
+    if len(issues) > 80:
+        failure_items.append(
+            "<li class='issue-item'>"
+            f"<span class='chip muted'>more</span><div><strong>{esc(len(issues) - 80)} additional issues</strong>"
+            "<small>Open latest JSON for the full set.</small></div></li>"
+        )
+    if not failure_items:
+        failure_items.append(
+            "<li class='issue-item'>"
+            "<span class='chip ok'>ok</span>"
+            "<div><strong>No current failures</strong><small>latest report per mode</small></div>"
+            "</li>"
+        )
+
+    network_rows: list[str] = []
+    for name, data in sorted(public_networks.items()):
+        network_rows.append(
+            "<tr>"
+            f"<td><span class='mode-name'>{esc(name)}</span></td>"
+            f"<td>{esc(fmt_bytes(data.get('rx_bytes')))}</td>"
+            f"<td>{esc(fmt_number(data.get('rx_packets')))}</td>"
+            f"<td>{esc(fmt_bytes(data.get('tx_bytes')))}</td>"
+            f"<td>{esc(fmt_number(data.get('tx_packets')))}</td>"
+            "</tr>"
+        )
+    network_table = (
+        "<div class='table-shell'><table><thead><tr><th>Interface</th><th>RX Bytes</th><th>RX Packets</th><th>TX Bytes</th><th>TX Packets</th></tr></thead>"
+        f"<tbody>{''.join(network_rows)}</tbody></table></div>"
+        if network_rows
+        else "<div class='empty-state'>No public network interface counters in the latest self report.</div>"
+    )
+
+    service_section = (
+        f"<div class='service-grid'>{''.join(service_cards)}</div>"
+        if service_cards
+        else "<div class='empty-state'>No self-check report yet.</div>"
+    )
+    generated = esc(fmt_time(current.get("run", {}).get("completed_at") or utc_now()))
+    host = esc(system.get("hostname") or "-")
+    latest_mode = esc(report_mode(current))
+    mode_count = esc(fmt_number(len(ordered_modes)))
+    total_failures_label = esc(fmt_number(total_failures))
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1282,49 +1892,83 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="refresh" content="60">
   <title>Project Watchtower</title>
-  <style>
-    :root {{ color-scheme: light dark; --ok:#107c41; --warn:#a45b00; --fail:#b42318; --line:#d0d7de; --muted:#57606a; }}
-    body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f6f8fa; color:#1f2328; }}
-    main {{ max-width:1120px; margin:0 auto; padding:28px 18px 48px; }}
-    header {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-end; border-bottom:1px solid var(--line); padding-bottom:18px; }}
-    h1 {{ margin:0; font-size:28px; letter-spacing:0; }}
-    h2 {{ margin:28px 0 12px; font-size:18px; letter-spacing:0; }}
-    .muted, small {{ color:var(--muted); }}
-    .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:18px; }}
-    .metric, .panel {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; }}
-    .metric strong {{ display:block; font-size:20px; margin-top:4px; }}
-    table {{ width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden; }}
-    th, td {{ padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; font-size:14px; }}
-    th {{ background:#f0f3f6; color:#57606a; font-weight:600; }}
-    tr:last-child td {{ border-bottom:0; }}
-    .pill {{ display:inline-block; min-width:42px; text-align:center; border-radius:999px; padding:3px 8px; font-size:12px; font-weight:700; color:#fff; }}
-    .ok {{ background:var(--ok); }} .warn {{ background:var(--warn); }} .fail {{ background:var(--fail); }} .muted {{ background:#6e7781; }}
-    .checks {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:8px; }}
-    .check {{ display:grid; grid-template-columns:58px 1fr; gap:8px; align-items:center; background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px; }}
-    .check small {{ grid-column:2; }}
-    li {{ margin:0 0 12px; }} code {{ word-break:break-all; }} .mode {{ color:var(--muted); font-weight:700; }}
-    @media (prefers-color-scheme: dark) {{ body {{ background:#0d1117; color:#e6edf3; }} .metric,.panel,table,.check {{ background:#161b22; }} th {{ background:#21262d; }} }}
-  </style>
+  <style>{DASHBOARD_CSS}</style>
 </head>
 <body>
-<main>
-  <header>
-    <div><h1>Project Watchtower</h1><div class="muted">Generated {generated}. Auto-refreshes every 60 seconds.</div></div>
-    <div class="muted">Host: {html.escape(str(system.get('hostname') or '-'))}</div>
+<main class="app-shell">
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Project Watchtower</p>
+      <h1>Operational Status</h1>
+    </div>
+    <div class="top-meta">
+      <span>Generated {generated}</span>
+      <a class="link-pill" href="/latest.json">JSON</a>
+      <a class="link-pill" href="/latest.md">Markdown</a>
+    </div>
   </header>
-  <section class="grid">
-    <div class="metric">Memory available<strong>{html.escape(mem_available)}</strong><small>of {html.escape(mem_total)}</small></div>
-    <div class="metric">Disk free<strong>{html.escape(disk_free)}</strong><small>of {html.escape(disk_total)}</small></div>
-    <div class="metric">Load average<strong>{html.escape(load_text)}</strong><small>1m, 5m, 15m</small></div>
+
+  <section class="status-band tone-{overall_status}">
+    <div>
+      <div class="status-title">
+        <span class="chip {overall_status}">{esc(overall_label)}</span>
+        <strong>{mode_count} monitored modes</strong>
+      </div>
+      <div class="status-copy">
+        Latest mode is {latest_mode}. Current aggregate has {esc(fmt_number(total_urls))} URL checks,
+        {total_failures_label} total issues, and {esc(fmt_bytes(total_bytes_read))} bounded traffic read.
+      </div>
+    </div>
+    <div class="status-facts">
+      <div class="fact"><span>Host</span><strong>{host}</strong></div>
+      <div class="fact"><span>Refresh</span><strong>60 seconds</strong></div>
+      <div class="fact"><span>CPU</span><strong>{esc(cpu_count)} cores</strong></div>
+      <div class="fact"><span>Load</span><strong>{esc(load_text)}</strong></div>
+    </div>
   </section>
-  <h2>Mode Status</h2>
-  <table><thead><tr><th>Mode</th><th>Status</th><th>Completed</th><th>URLs</th><th>URL Fail</th><th>Self Fail</th><th>Bytes</th></tr></thead><tbody>
-    {''.join(rows)}
-  </tbody></table>
-  <h2>Service Checks</h2>
-  <div class="checks">{''.join(service_cards) if service_cards else "<div class='panel'>No self-check report yet.</div>"}</div>
-  <h2>Current Failures</h2>
-  <div class="panel"><ul>{''.join(failure_items)}</ul></div>
+
+  <section class="metric-grid">
+    {''.join(metric_cards)}
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2>Mode Status</h2>
+      <small>Newest report retained per mode</small>
+    </div>
+    <div class="table-shell">
+      <table>
+        <thead>
+          <tr><th>Mode</th><th>Status</th><th>Completed</th><th>URLs</th><th>URL Fail</th><th>Repo Checks</th><th>Self Checks</th><th>Bytes</th></tr>
+        </thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2>Service Health</h2>
+      <small>Timer and host checks from self mode</small>
+    </div>
+    {service_section}
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2>Current Issues</h2>
+      <small>Services, URLs, and GitHub checks</small>
+    </div>
+    <ul class="issue-list">{''.join(failure_items)}</ul>
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2>Network Interfaces</h2>
+      <small>Cumulative counters from the latest self report</small>
+    </div>
+    {network_table}
+  </section>
 </main>
 </body>
 </html>
