@@ -765,7 +765,13 @@ def fetch_url(target: UrlTarget, timeout: float, budget: ByteBudget, per_request
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
             final_url = exc.geturl()
-            error = f"http {exc.code}"
+            if 300 <= status < 400:
+                location = exc.headers.get("Location")
+                if location:
+                    final_url = urllib.parse.urljoin(url, location)
+                bytes_read = read_limited(exc, budget, per_request_limit)
+            else:
+                error = f"http {exc.code}"
         except Exception as exc:
             error = type(exc).__name__ + ": " + str(exc)[:180]
 
