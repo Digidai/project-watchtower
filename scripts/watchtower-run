@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 MODE="${1:-light}"
 case "$MODE" in
-  light|daily|weekly|venture) ;;
+  core|self|light|github-lite|daily|weekly|venture|venture-check|venture-discover) ;;
   *) echo "invalid mode: $MODE" >&2; exit 64 ;;
 esac
 
@@ -24,8 +24,18 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 cd "$APP_DIR"
 export PYTHONPATH="$APP_DIR"
-nice -n 10 python3 -m watchtower.cli run \
-  --mode "$MODE" \
-  --config "$APP_DIR/config/targets.json" \
-  --output-dir "$STATE_DIR/reports" \
+args=(
+  run
+  --mode "$MODE"
+  --config "$APP_DIR/config/targets.json"
+  --output-dir "$STATE_DIR/reports"
   --no-fail
+)
+if [ -n "${WATCHTOWER_MAX_URLS:-}" ]; then
+  args+=(--max-urls "$WATCHTOWER_MAX_URLS")
+fi
+if [ -n "${WATCHTOWER_MAX_BYTES:-}" ]; then
+  args+=(--max-bytes "$WATCHTOWER_MAX_BYTES")
+fi
+
+nice -n 10 python3 -m watchtower.cli "${args[@]}"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Project Watchtower VentureDex cache hourly
+
+[Timer]
+OnBootSec=10min
+OnCalendar=*-*-* *:11:00
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

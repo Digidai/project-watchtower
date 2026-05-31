@@ -1,0 +1,21 @@
+[Unit]
+Description=Project Watchtower VentureDex discovery cache refresh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=watchtower
+Group=watchtower
+WorkingDirectory=/opt/project-watchtower
+Environment=WATCHTOWER_BUSY_OK=1
+ExecStart=/opt/project-watchtower/scripts/watchtower-run venture-discover
+Nice=10
+TimeoutStartSec=600
+MemoryMax=350M
+CPUQuota=30%
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/project-watchtower /tmp

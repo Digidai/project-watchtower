@@ -83,6 +83,8 @@
     "source_url": "https://venturedex.co/",
     "profile_max": 80,
     "company_max": 50,
+    "check_batch_size": 24,
+    "cache_max_age_seconds": 21600,
     "profile_concurrency": 6,
     "sitemap_max_bytes": 1048576,
     "homepage_max_bytes": 2097152,
@@ -104,28 +106,53 @@
     "slow_url_ms": 8000,
     "github_max_pages": 5,
     "per_request_max_bytes": 2097152,
+    "github_lite_repo_targets": 16,
     "readme_link_max_per_repo": 5,
     "report_retention": 2000,
     "mode_max_urls": {
+      "core": 8,
+      "self": 0,
       "light": 12,
+      "github-lite": 40,
       "daily": 260,
       "weekly": 500,
-      "venture": 60
+      "venture": 60,
+      "venture-check": 25,
+      "venture-discover": 2
     },
     "github_detail_concurrency": 4,
     "github_detail_repos": {
+      "github-lite": 8,
       "daily": 12,
       "weekly": 28
     },
     "github_detail_api_requests": {
+      "github-lite": 16,
       "daily": 45,
       "weekly": 80
     },
     "mode_max_megabytes": {
+      "core": 8,
+      "self": 1,
       "light": 8,
+      "github-lite": 32,
       "daily": 128,
       "weekly": 384,
-      "venture": 96
-    }
+      "venture": 96,
+      "venture-check": 48,
+      "venture-discover": 32
+    },
+    "self_min_mem_available_ratio": 0.12,
+    "self_min_disk_free_ratio": 0.1,
+    "self_max_load_per_cpu": 1.5,
+    "self_expected_timers": [
+      "project-watchtower-core.timer",
+      "project-watchtower-self.timer",
+      "project-watchtower-light.timer",
+      "project-watchtower-github-lite.timer",
+      "project-watchtower-daily.timer",
+      "project-watchtower-venture-check.timer",
+      "project-watchtower-venture-discover.timer"
+    ]
   }
 }

@@ -73,17 +73,66 @@ if [ -n "${WATCHTOWER_AUTHORIZED_KEY_B64:-}" ]; then
   rm -f "$tmp_authorized"
 fi
 
-sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-light.service /etc/systemd/system/project-watchtower-light.service
-sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-light.timer /etc/systemd/system/project-watchtower-light.timer
-sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-daily.service /etc/systemd/system/project-watchtower-daily.service
-sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-daily.timer /etc/systemd/system/project-watchtower-daily.timer
-sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-venture.service /etc/systemd/system/project-watchtower-venture.service
-sudo install -m 0644 /opt/project-watchtower/systemd/project-watchtower-venture.timer /etc/systemd/system/project-watchtower-venture.timer
+for unit in /opt/project-watchtower/systemd/project-watchtower-*; do
+  sudo install -m 0644 "$unit" "/etc/systemd/system/$(basename "$unit")"
+done
 sudo systemctl daemon-reload
-sudo systemctl enable --now project-watchtower-light.timer project-watchtower-daily.timer project-watchtower-venture.timer
 
 if ! pgrep -u watchtower -f 'watchtower.cli run' >/dev/null 2>&1; then
   sudo rm -rf /tmp/project-watchtower.lock /var/lib/project-watchtower/project-watchtower.lock
 fi
-sudo -u watchtower env WATCHTOWER_BUSY_OK=1 /opt/project-watchtower/scripts/watchtower-run light
+
+require_nonfail_summary() {
+  local mode="$1"
+  local output="$2"
+  SMOKE_MODE="$mode" SMOKE_OUTPUT="$output" python3 - <<'PY'
+import json
+import os
+import sys
+
+mode = os.environ["SMOKE_MODE"]
+try:
+    payload = json.loads(os.environ["SMOKE_OUTPUT"])
+except Exception as exc:
+    raise SystemExit(f"{mode} smoke did not return JSON: {exc}")
+summary = payload.get("summary")
+if not isinstance(summary, dict):
+    raise SystemExit(f"{mode} smoke did not return a summary")
+if summary.get("status") == "fail":
+    raise SystemExit(f"{mode} smoke failed: {summary}")
+PY
+}
+
+sudo -u watchtower env WATCHTOWER_BUSY_OK=1 WATCHTOWER_MAX_URLS=3 WATCHTOWER_MAX_BYTES=4194304 /opt/project-watchtower/scripts/watchtower-run core
+sudo -u watchtower env WATCHTOWER_BUSY_OK=1 WATCHTOWER_MAX_URLS=2 WATCHTOWER_MAX_BYTES=12582912 /opt/project-watchtower/scripts/watchtower-run venture-discover
+
+sudo systemctl disable --now project-watchtower-venture.timer >/dev/null 2>&1 || true
+sudo systemctl enable --now \
+  project-watchtower-core.timer \
+  project-watchtower-self.timer \
+  project-watchtower-light.timer \
+  project-watchtower-github-lite.timer \
+  project-watchtower-daily.timer \
+  project-watchtower-venture-check.timer \
+  project-watchtower-venture-discover.timer
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if ! pgrep -u watchtower -f 'watchtower.cli run' >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+if ! pgrep -u watchtower -f 'watchtower.cli run' >/dev/null 2>&1; then
+  sudo rm -rf /tmp/project-watchtower.lock /var/lib/project-watchtower/project-watchtower.lock
+fi
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  self_smoke="$(sudo -u watchtower env WATCHTOWER_BUSY_OK=1 /opt/project-watchtower/scripts/watchtower-run self)"
+  printf '%s\n' "$self_smoke"
+  case "$self_smoke" in
+    *'"status":"busy"'*|*'"status": "busy"'*) sleep 2 ;;
+    *) break ;;
+  esac
+done
+require_nonfail_summary self "$self_smoke"
+sudo -u watchtower env WATCHTOWER_BUSY_OK=1 WATCHTOWER_MAX_URLS=5 WATCHTOWER_MAX_BYTES=12582912 /opt/project-watchtower/scripts/watchtower-run venture-check
+systemctl list-timers --all --no-pager 'project-watchtower-*'
 REMOTE

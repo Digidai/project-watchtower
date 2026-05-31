@@ -36,10 +36,15 @@ WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
 
 ## Modes
 
+- `core`: checks the curated core URL list every 5 minutes with no GitHub inventory fetch.
+- `self`: checks server resources and expected Watchtower timers every 5 minutes.
 - `light`: checks the curated core URL list about every 30 minutes.
+- `github-lite`: checks recent GitHub project health about every 15 minutes with a small API and URL budget.
 - `daily`: fetches the Digidai public repository inventory, checks repo homepages, samples README links, and checks recent repo workflow status.
 - `weekly`: deeper checks with a larger URL and byte budget.
 - `venture`: every 15 minutes, pulls VentureDex startup profiles from `https://venturedex.co/`, extracts canonical company homepages, and checks those homepages within a byte budget.
+- `venture-discover`: refreshes the VentureDex profile/company cache hourly.
+- `venture-check`: checks a rotating cached batch of VentureDex company homepages every 10 minutes.
 
 ## GitHub Actions Setup
 
@@ -52,12 +57,12 @@ for a restricted `watchtower` login, then set repository secrets:
 - `WATCHTOWER_SSH_KEY`
 - `WATCHTOWER_KNOWN_HOSTS`
 
-The workflow sends only `light`, `daily`, `weekly`, or `venture` as the SSH command. On the
+The workflow sends only approved Watchtower modes as the SSH command. On the
 server, `scripts/forced-command.sh` rejects every other command. If a server-side
 timer is already running, GitHub-triggered runs return a bounded `busy` response
 instead of opening a shell or stacking parallel jobs.
 
-The scheduled GitHub workflow contacts the server twice per hour and runs the
+The scheduled GitHub workflow contacts the server every 15 minutes and runs the
 daily mode once per day. Server-side systemd timers also run independently, so
 monitoring continues even if GitHub Actions is delayed.
 

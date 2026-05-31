@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Project Watchtower VentureDex cached checks every 10 minutes
+
+[Timer]
+OnBootSec=8min
+OnCalendar=*-*-* *:07/10:00
+AccuracySec=45s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

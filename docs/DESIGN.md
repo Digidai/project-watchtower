@@ -10,6 +10,9 @@ workflow status for active non-fork repositories.
 The `venture` mode uses VentureDex as a curated source list, extracts canonical
 company homepages from startup profile JSON-LD, and checks those homepages every
 15 minutes as observed third-party targets.
+The phase-one scheduler splits high-frequency work into small modes: `core` and
+`self` every 5 minutes, `github-lite` every 15 minutes, `venture-check` every 10
+minutes, and `venture-discover` hourly.
 
 ## Non-Goals
 
@@ -43,11 +46,14 @@ Network controls:
   names or non-global IP literals.
 - Concurrency defaults to 3.
 - Per-request body read defaults to 2 MiB.
-- Per-run byte budgets default to 8 MiB, 128 MiB, 384 MiB, and 96 MiB for
-  light, daily, weekly, and venture mode.
+- Per-run byte budgets default per mode, from 1 MiB for `self` to 384 MiB for
+  `weekly`.
 - Per-mode URL caps keep expanded discovery bounded.
 - GitHub detail checks use an API request budget so the server does not burn
   through unauthenticated rate limits.
+- VentureDex discovery writes `/var/lib/project-watchtower/venturedex-cache.json`;
+  `venture-check` uses a rotating batch from that cache instead of rediscovering
+  every run.
 - Slow URL warnings default to 8 seconds to avoid noisy alerts from normal
   third-party project sites.
 
@@ -60,9 +66,11 @@ authorized key should use a forced command:
 command="/opt/project-watchtower/scripts/forced-command.sh",no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc ssh-ed25519 ...
 ```
 
-That script accepts only `light`, `daily`, `weekly`, `venture`, and `status`.
+That script accepts only Watchtower modes and `status`.
 GitHub-triggered runs tolerate a `busy` lock and return a bounded JSON response
 instead of failing or stacking parallel checks.
+The workflow has a repository-level concurrency group, so scheduled runs do not
+stack when GitHub dispatch is delayed.
 
 ## Reports
 

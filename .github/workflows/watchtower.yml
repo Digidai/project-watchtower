@@ -1,5 +1,9 @@
 name: Project Watchtower
 
+concurrency:
+  group: project-watchtower-server
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
@@ -9,12 +13,17 @@ on:
         default: "light"
         type: choice
         options:
+          - core
+          - self
           - light
+          - github-lite
           - daily
           - weekly
           - venture
+          - venture-check
+          - venture-discover
   schedule:
-    - cron: "12,42 * * * *"
+    - cron: "7,22,37,52 * * * *"
     - cron: "31 3 * * *"
 
 permissions:
@@ -34,7 +43,7 @@ jobs:
           elif [ "${{ github.event.schedule }}" = "31 3 * * *" ]; then
             echo "mode=daily" >> "$GITHUB_OUTPUT"
           else
-            echo "mode=light" >> "$GITHUB_OUTPUT"
+            echo "mode=core" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Prepare SSH key

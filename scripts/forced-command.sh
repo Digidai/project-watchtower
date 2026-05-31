@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ORIGINAL="${SSH_ORIGINAL_COMMAND:-light}"
 case "$ORIGINAL" in
-  light|daily|weekly|venture)
+  core|self|light|github-lite|daily|weekly|venture|venture-check|venture-discover)
     WATCHTOWER_BUSY_OK=1 exec /opt/project-watchtower/scripts/watchtower-run "$ORIGINAL"
     ;;
   status)

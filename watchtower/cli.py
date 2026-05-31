@@ -21,6 +21,7 @@ import re
 import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -34,6 +35,17 @@ from typing import Any, Iterable
 
 DEFAULT_USER_AGENT = "DigidaiProjectWatchtower/0.1 (+https://github.com/Digidai/project-watchtower)"
 UTC = dt.timezone.utc
+RUN_MODES = (
+    "core",
+    "self",
+    "light",
+    "github-lite",
+    "daily",
+    "weekly",
+    "venture",
+    "venture-check",
+    "venture-discover",
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -91,6 +103,14 @@ class GitHubRepoCheck:
     detail: str | None = None
     url: str | None = None
     checked_at: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SelfCheck:
+    name: str
+    ok: bool
+    status: str
+    detail: str | None = None
 
 
 class ByteBudget:
@@ -417,7 +437,7 @@ def collect_github_repo_checks(
     timeout: float,
     policy: dict[str, Any],
 ) -> tuple[list[GitHubRepoCheck], list[UrlTarget], dict[str, Any]]:
-    if mode == "light":
+    if mode in {"core", "self", "light", "venture-check", "venture-discover"}:
         return [], [], {"api_detail_requests_used": 0, "detail_repo_count": 0}
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("WATCHTOWER_GITHUB_TOKEN")
@@ -702,6 +722,123 @@ def collect_venturedex_targets(
     return targets, rejected, startups, meta
 
 
+def venture_cache_path(state_dir: Path) -> Path:
+    return state_dir / "venturedex-cache.json"
+
+
+def write_venture_cache(state_dir: Path, startups: list[VentureDexStartup], meta: dict[str, Any]) -> None:
+    ensure_dir(state_dir)
+    existing = read_venture_cache(state_dir)
+    payload = {
+        "updated_at": utc_now(),
+        "cursor": int(existing.get("cursor", 0) or 0),
+        "venturedex": meta,
+        "startups": [startup_to_dict(startup) for startup in startups],
+    }
+    venture_cache_path(state_dir).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def read_venture_cache(state_dir: Path) -> dict[str, Any]:
+    path = venture_cache_path(state_dir)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def cache_age_seconds(cache: dict[str, Any]) -> int | None:
+    value = cache.get("updated_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0, int((dt.datetime.now(UTC) - parsed).total_seconds()))
+
+
+def collect_venture_cached_targets(
+    config: dict[str, Any],
+    timeout: float,
+    state_dir: Path,
+) -> tuple[list[UrlTarget], list[str], list[VentureDexStartup], dict[str, Any]]:
+    venture_config = config.get("venturedex", {})
+    batch_size = max(1, int(venture_config.get("check_batch_size", 24)))
+    max_age = max(60, int(venture_config.get("cache_max_age_seconds", 6 * 60 * 60)))
+    cache = read_venture_cache(state_dir)
+    age = cache_age_seconds(cache)
+    refreshed = False
+    errors: list[str] = []
+
+    if age is None or age > max_age:
+        targets, rejected, startups, meta = collect_venturedex_targets(config, timeout)
+        write_venture_cache(state_dir, startups, meta)
+        cache = read_venture_cache(state_dir)
+        age = cache_age_seconds(cache)
+        refreshed = True
+        if rejected:
+            errors.extend(f"rejected during refresh: {url}" for url in rejected[:10])
+    startups_payload = cache.get("startups") if isinstance(cache.get("startups"), list) else []
+
+    startups: list[VentureDexStartup] = []
+    company_targets: list[UrlTarget] = []
+    seen: set[str] = set()
+    for item in startups_payload:
+        if not isinstance(item, dict):
+            continue
+        startup = VentureDexStartup(
+            name=str(item.get("name") or ""),
+            profile_url=str(item.get("profile_url") or ""),
+            company_url=normalize_url(item.get("company_url")),
+            error=item.get("error") if isinstance(item.get("error"), str) else None,
+        )
+        startups.append(startup)
+        if not startup.company_url:
+            continue
+        key = startup.company_url.rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        company_targets.append(UrlTarget(url=startup.company_url, source="venturedex_company", repo=startup.name, critical=False))
+
+    cursor = int(cache.get("cursor", 0) or 0)
+    if company_targets:
+        start = cursor % len(company_targets)
+        ordered = company_targets[start:] + company_targets[:start]
+        selected = ordered[: min(batch_size, len(ordered))]
+        cache["cursor"] = (start + len(selected)) % len(company_targets)
+        cache["last_checked_at"] = utc_now()
+        venture_cache_path(state_dir).write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    else:
+        selected = []
+        errors.append("no cached company targets")
+
+    source_url = normalize_url(str(venture_config.get("source_url") or "https://venturedex.co/")) or "https://venturedex.co/"
+    source_root = f"{urllib.parse.urlparse(source_url).scheme}://{urllib.parse.urlparse(source_url).netloc}/"
+    source_targets = [
+        UrlTarget(url=source_root, source="venturedex_source", repo=None, critical=True),
+    ]
+    targets, rejected = filter_allowed_targets(source_targets + selected, config)
+    meta = {
+        "source_url": source_root,
+        "cache_path": str(venture_cache_path(state_dir)),
+        "cache_age_seconds": age,
+        "cache_refreshed": refreshed,
+        "cached_company_target_count": len(company_targets),
+        "company_target_count": len(selected),
+        "company_url_count": len(company_targets),
+        "profile_count": len(startups),
+        "profile_pages_checked": 0,
+        "discovery_bytes_read": 0,
+        "discovery_errors": errors,
+        "check_batch_size": batch_size,
+    }
+    return targets, rejected, startups, meta
+
+
 def read_limited(resp: Any, budget: ByteBudget, per_request_limit: int) -> int:
     total = 0
     chunk_size = 32 * 1024
@@ -826,6 +963,74 @@ def collect_system_metrics() -> dict[str, Any]:
     return metrics
 
 
+def systemctl_is_active(unit: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["systemctl", "is-active", unit],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+    except Exception as exc:
+        return f"error:{type(exc).__name__}"
+    return completed.stdout.strip() or f"exit:{completed.returncode}"
+
+
+def collect_self_checks(config: dict[str, Any], system_metrics: dict[str, Any]) -> list[SelfCheck]:
+    policy = config.get("policy", {})
+    checks: list[SelfCheck] = []
+
+    meminfo = system_metrics.get("meminfo") if isinstance(system_metrics.get("meminfo"), dict) else {}
+    mem_total = int(meminfo.get("MemTotal") or 0)
+    mem_available = int(meminfo.get("MemAvailable") or 0)
+    if mem_total > 0:
+        pct = mem_available / mem_total
+        checks.append(SelfCheck(
+            name="memory_available",
+            ok=pct >= float(policy.get("self_min_mem_available_ratio", 0.12)),
+            status="ok" if pct >= float(policy.get("self_min_mem_available_ratio", 0.12)) else "warn",
+            detail=f"{mem_available // (1024 * 1024)}MiB available of {mem_total // (1024 * 1024)}MiB",
+        ))
+
+    disk = system_metrics.get("disk_root") if isinstance(system_metrics.get("disk_root"), dict) else {}
+    disk_total = int(disk.get("total") or 0)
+    disk_free = int(disk.get("free") or 0)
+    if disk_total > 0:
+        pct = disk_free / disk_total
+        checks.append(SelfCheck(
+            name="disk_root_free",
+            ok=pct >= float(policy.get("self_min_disk_free_ratio", 0.10)),
+            status="ok" if pct >= float(policy.get("self_min_disk_free_ratio", 0.10)) else "fail",
+            detail=f"{disk_free // (1024 * 1024)}MiB free of {disk_total // (1024 * 1024)}MiB",
+        ))
+
+    loadavg = system_metrics.get("loadavg")
+    if isinstance(loadavg, (list, tuple)) and loadavg:
+        cpu_count = max(1, os.cpu_count() or 1)
+        threshold = float(policy.get("self_max_load_per_cpu", 1.5)) * cpu_count
+        one_min = float(loadavg[0])
+        checks.append(SelfCheck(
+            name="load_average",
+            ok=one_min <= threshold,
+            status="ok" if one_min <= threshold else "warn",
+            detail=f"1m load {one_min:.2f}, threshold {threshold:.2f}",
+        ))
+
+    timers = list(policy.get("self_expected_timers", []))
+    for unit in timers:
+        status = systemctl_is_active(str(unit))
+        checks.append(SelfCheck(
+            name=f"timer:{unit}",
+            ok=status == "active",
+            status="ok" if status == "active" else "fail",
+            detail=status,
+        ))
+
+    return checks
+
+
 def repo_to_dict(repo: RepoSummary) -> dict[str, Any]:
     return dataclasses.asdict(repo)
 
@@ -835,6 +1040,10 @@ def result_to_dict(result: UrlResult) -> dict[str, Any]:
 
 
 def check_to_dict(check: GitHubRepoCheck) -> dict[str, Any]:
+    return dataclasses.asdict(check)
+
+
+def self_check_to_dict(check: SelfCheck) -> dict[str, Any]:
     return dataclasses.asdict(check)
 
 
@@ -853,8 +1062,10 @@ def summarize(
     url_results: list[UrlResult],
     repo_checks: list[GitHubRepoCheck],
     github_meta: dict[str, Any],
+    self_checks: list[SelfCheck] | None = None,
     slow_url_ms: int = 8000,
 ) -> dict[str, Any]:
+    self_checks = self_checks or []
     failed_urls = [r for r in url_results if not r.ok]
     failed_critical_urls = [r for r in failed_urls if r.critical]
     failed_observed_urls = [r for r in failed_urls if not r.critical]
@@ -864,10 +1075,12 @@ def summarize(
         r for r in url_results if r.tls_days_remaining is not None and r.tls_days_remaining < 30
     ]
     failed_repo_checks = [c for c in repo_checks if not c.ok and c.status not in {"missing", "skipped"}]
+    failed_self_checks = [c for c in self_checks if not c.ok and c.status == "fail"]
+    warning_self_checks = [c for c in self_checks if not c.ok and c.status != "fail"]
     status = "ok"
-    if failed_critical_urls:
+    if failed_critical_urls or failed_self_checks:
         status = "fail"
-    elif failed_observed_urls or slow_urls or cert_warnings or failed_repo_checks or github_meta.get("error"):
+    elif failed_observed_urls or slow_urls or cert_warnings or failed_repo_checks or warning_self_checks or github_meta.get("error"):
         status = "warn"
     return {
         "repo_count": len(repos),
@@ -882,6 +1095,9 @@ def summarize(
         "cert_warning_count": len(cert_warnings),
         "repo_check_count": len(repo_checks),
         "failed_repo_check_count": len(failed_repo_checks),
+        "self_check_count": len(self_checks),
+        "failed_self_check_count": len(failed_self_checks),
+        "warning_self_check_count": len(warning_self_checks),
         "slow_url_ms": slow_url_ms,
         "status": status,
     }
@@ -897,20 +1113,26 @@ def build_targets(
     mode: str,
     discovered_targets: list[UrlTarget],
 ) -> tuple[list[UrlTarget], list[str]]:
+    policy = config.get("policy", {})
     explicit = [
         UrlTarget(url=url, source="explicit", repo=None, critical=True)
         for url in list(config.get("urls", []))
     ]
+    if mode in {"core", "self", "light"}:
+        return filter_allowed_targets(explicit if mode != "self" else [], config)
+
+    repo_candidates = repos
+    if mode == "github-lite":
+        limit = max(1, int(policy.get("github_lite_repo_targets", 16)))
+        repo_candidates = [repo for repo in sorted_recent_repos(repos) if not repo.archived and not repo.fork][:limit]
+
     repo_targets: list[UrlTarget] = []
-    for repo in repos:
+    for repo in repo_candidates:
         if repo.url:
             repo_targets.append(UrlTarget(url=repo.url, source="github_repo", repo=repo.name, critical=False))
         if repo.homepage:
             repo_targets.append(UrlTarget(url=repo.homepage, source="repo_homepage", repo=repo.name, critical=False))
-    if mode == "light":
-        targets = explicit
-    else:
-        targets = explicit + repo_targets + discovered_targets
+    targets = explicit + repo_targets + discovered_targets
     return filter_allowed_targets(targets, config)
 
 
@@ -993,6 +1215,8 @@ def render_markdown(report: dict[str, Any]) -> str:
     if venture:
         lines += ["", "## VentureDex Discovery", ""]
         lines.append(f"- Source: `{venture.get('source_url')}`")
+        if venture.get("cache_path"):
+            lines.append(f"- Cache: `{venture.get('cache_path')}` age `{venture.get('cache_age_seconds')}` seconds")
         lines.append(f"- Profiles checked: `{venture.get('profile_pages_checked', 0)}`")
         lines.append(f"- Company URLs found: `{venture.get('company_url_count', 0)}`")
         lines.append(f"- Company targets queued: `{venture.get('company_target_count', 0)}`")
@@ -1001,6 +1225,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         if errors:
             for error in errors[:10]:
                 lines.append(f"- Discovery warning: `{error}`")
+    self_checks = report.get("self_checks", [])
+    if self_checks:
+        lines += ["", "## Self Checks", ""]
+        for check in self_checks[:50]:
+            mark = "ok" if check.get("ok") else check.get("status", "warn")
+            lines.append(f"- `{mark}` `{check.get('name')}` {check.get('detail') or ''}".rstrip())
     lines += ["", "## Recently Updated Repositories", ""]
     repos = sorted(report["repositories"], key=lambda r: r.get("pushed_at") or "", reverse=True)
     for repo in repos[:20]:
@@ -1028,6 +1258,8 @@ def run(args: argparse.Namespace) -> int:
     if args.max_bytes is not None:
         max_bytes = args.max_bytes
     owner = str(config.get("github_owner", "Digidai"))
+    output_dir = Path(args.output_dir)
+    state_dir = output_dir.resolve().parent
 
     started_at = utc_now()
     run_id_seed = f"{started_at}:{args.mode}:{owner}".encode("utf-8")
@@ -1035,12 +1267,36 @@ def run(args: argparse.Namespace) -> int:
 
     venture_meta: dict[str, Any] = {}
     venture_startups: list[VentureDexStartup] = []
-    if args.mode == "venture":
+    self_checks: list[SelfCheck] = []
+    discovered_targets: list[UrlTarget] = []
+    if args.mode == "self":
         repos = []
         repo_checks = []
-        discovered_targets = []
+        rejected_urls = []
+        github_meta = {"skipped": True, "reason": "self mode"}
+        targets = []
+    elif args.mode == "core":
+        repos = []
+        repo_checks = []
+        github_meta = {"skipped": True, "reason": "core mode"}
+        targets, rejected_urls = build_targets(config, repos, args.mode, [])
+    elif args.mode == "venture":
+        repos = []
+        repo_checks = []
         github_meta = {"skipped": True, "reason": "venture mode"}
         targets, rejected_urls, venture_startups, venture_meta = collect_venturedex_targets(config, timeout)
+    elif args.mode == "venture-discover":
+        repos = []
+        repo_checks = []
+        github_meta = {"skipped": True, "reason": "venture-discover mode"}
+        discovered_targets, rejected_urls, venture_startups, venture_meta = collect_venturedex_targets(config, timeout)
+        write_venture_cache(state_dir, venture_startups, venture_meta)
+        targets = [target for target in discovered_targets if target.source == "venturedex_source"]
+    elif args.mode == "venture-check":
+        repos = []
+        repo_checks = []
+        github_meta = {"skipped": True, "reason": "venture-check mode"}
+        targets, rejected_urls, venture_startups, venture_meta = collect_venture_cached_targets(config, timeout, state_dir)
     else:
         try:
             repos, github_meta = fetch_repositories(owner, timeout=timeout, max_pages=int(policy.get("github_max_pages", 5)))
@@ -1074,6 +1330,10 @@ def run(args: argparse.Namespace) -> int:
                 results.append(future.result())
     results.sort(key=lambda r: r.url)
 
+    system_metrics = collect_system_metrics()
+    if args.mode == "self":
+        self_checks = collect_self_checks(config, system_metrics)
+
     report = {
         "run": {
             "id": run_id,
@@ -1085,10 +1345,18 @@ def run(args: argparse.Namespace) -> int:
         "github": github_meta,
         "venturedex": venture_meta,
         "venturedex_startups": [startup_to_dict(s) for s in venture_startups],
-        "summary": summarize(repos, results, repo_checks, github_meta, slow_url_ms=int(policy.get("slow_url_ms", 8000))),
+        "summary": summarize(
+            repos,
+            results,
+            repo_checks,
+            github_meta,
+            self_checks=self_checks,
+            slow_url_ms=int(policy.get("slow_url_ms", 8000)),
+        ),
         "repositories": [repo_to_dict(r) for r in sorted(repos, key=lambda r: r.name.lower())],
         "urls": [result_to_dict(r) for r in results],
         "github_repo_checks": [check_to_dict(c) for c in repo_checks],
+        "self_checks": [self_check_to_dict(c) for c in self_checks],
         "discovered_url_count": len(discovered_targets),
         "rejected_urls": rejected_urls,
         "resource_budget": {
@@ -1097,10 +1365,9 @@ def run(args: argparse.Namespace) -> int:
             "per_request_max_bytes": per_request_limit,
             "max_concurrency": workers,
         },
-        "system": collect_system_metrics(),
+        "system": system_metrics,
     }
 
-    output_dir = Path(args.output_dir)
     write_reports(output_dir, report, keep=int(policy.get("report_retention", 2000)))
     print(json.dumps({"summary": report["summary"], "output_dir": str(output_dir), "run_id": run_id}, sort_keys=True))
     return 0 if report["summary"]["status"] != "fail" or args.no_fail else 2
@@ -1123,7 +1390,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run_p = sub.add_parser("run", help="run a bounded health check")
-    run_p.add_argument("--mode", choices=["light", "daily", "weekly", "venture"], default="light")
+    run_p.add_argument("--mode", choices=list(RUN_MODES), default="light")
     run_p.add_argument("--config", default="config/targets.json")
     run_p.add_argument("--output-dir", default="reports")
     run_p.add_argument("--max-urls", type=int)
