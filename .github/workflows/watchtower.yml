@@ -10,16 +10,14 @@ on:
       mode:
         description: "Run mode"
         required: true
-        default: "light"
+        default: "core"
         type: choice
         options:
           - core
           - self
-          - light
           - github-lite
           - daily
           - weekly
-          - venture
           - venture-check
           - venture-discover
   schedule:

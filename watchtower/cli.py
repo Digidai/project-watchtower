@@ -38,11 +38,9 @@ UTC = dt.timezone.utc
 RUN_MODES = (
     "core",
     "self",
-    "light",
     "github-lite",
     "daily",
     "weekly",
-    "venture",
     "venture-check",
     "venture-discover",
 )
@@ -437,7 +435,7 @@ def collect_github_repo_checks(
     timeout: float,
     policy: dict[str, Any],
 ) -> tuple[list[GitHubRepoCheck], list[UrlTarget], dict[str, Any]]:
-    if mode in {"core", "self", "light", "venture-check", "venture-discover"}:
+    if mode in {"core", "self", "venture-check", "venture-discover"}:
         return [], [], {"api_detail_requests_used": 0, "detail_repo_count": 0}
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("WATCHTOWER_GITHUB_TOKEN")
@@ -1118,7 +1116,7 @@ def build_targets(
         UrlTarget(url=url, source="explicit", repo=None, critical=True)
         for url in list(config.get("urls", []))
     ]
-    if mode in {"core", "self", "light"}:
+    if mode in {"core", "self"}:
         return filter_allowed_targets(explicit if mode != "self" else [], config)
 
     repo_candidates = repos
@@ -1280,11 +1278,6 @@ def run(args: argparse.Namespace) -> int:
         repo_checks = []
         github_meta = {"skipped": True, "reason": "core mode"}
         targets, rejected_urls = build_targets(config, repos, args.mode, [])
-    elif args.mode == "venture":
-        repos = []
-        repo_checks = []
-        github_meta = {"skipped": True, "reason": "venture mode"}
-        targets, rejected_urls, venture_startups, venture_meta = collect_venturedex_targets(config, timeout)
     elif args.mode == "venture-discover":
         repos = []
         repo_checks = []
@@ -1390,7 +1383,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run_p = sub.add_parser("run", help="run a bounded health check")
-    run_p.add_argument("--mode", choices=list(RUN_MODES), default="light")
+    run_p.add_argument("--mode", choices=list(RUN_MODES), default="core")
     run_p.add_argument("--config", default="config/targets.json")
     run_p.add_argument("--output-dir", default="reports")
     run_p.add_argument("--max-urls", type=int)

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ORIGINAL="${SSH_ORIGINAL_COMMAND:-light}"
+ORIGINAL="${SSH_ORIGINAL_COMMAND:-core}"
 case "$ORIGINAL" in
-  core|self|light|github-lite|daily|weekly|venture|venture-check|venture-discover)
+  core|self|github-lite|daily|weekly|venture-check|venture-discover)
     WATCHTOWER_BUSY_OK=1 exec /opt/project-watchtower/scripts/watchtower-run "$ORIGINAL"
     ;;
   status)

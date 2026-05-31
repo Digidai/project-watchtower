@@ -76,6 +76,15 @@ fi
 for unit in /opt/project-watchtower/systemd/project-watchtower-*; do
   sudo install -m 0644 "$unit" "/etc/systemd/system/$(basename "$unit")"
 done
+for obsolete in \
+  project-watchtower-light.service \
+  project-watchtower-light.timer \
+  project-watchtower-venture.service \
+  project-watchtower-venture.timer
+do
+  sudo systemctl disable --now "$obsolete" >/dev/null 2>&1 || true
+  sudo rm -f "/etc/systemd/system/$obsolete"
+done
 sudo systemctl daemon-reload
 
 if ! pgrep -u watchtower -f 'watchtower.cli run' >/dev/null 2>&1; then
@@ -106,11 +115,9 @@ PY
 sudo -u watchtower env WATCHTOWER_BUSY_OK=1 WATCHTOWER_MAX_URLS=3 WATCHTOWER_MAX_BYTES=4194304 /opt/project-watchtower/scripts/watchtower-run core
 sudo -u watchtower env WATCHTOWER_BUSY_OK=1 WATCHTOWER_MAX_URLS=2 WATCHTOWER_MAX_BYTES=12582912 /opt/project-watchtower/scripts/watchtower-run venture-discover
 
-sudo systemctl disable --now project-watchtower-venture.timer >/dev/null 2>&1 || true
 sudo systemctl enable --now \
   project-watchtower-core.timer \
   project-watchtower-self.timer \
-  project-watchtower-light.timer \
   project-watchtower-github-lite.timer \
   project-watchtower-daily.timer \
   project-watchtower-venture-check.timer \

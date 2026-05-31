@@ -21,7 +21,7 @@ The implementation is intentionally conservative:
 Local smoke run:
 
 ```bash
-python3 -m watchtower.cli run --mode light --config config/targets.json --output-dir reports --max-urls 5 --no-fail
+python3 -m watchtower.cli run --mode core --config config/targets.json --output-dir reports --max-urls 5 --no-fail
 ```
 
 Deploy to the OCI instance without using `dnf`:
@@ -38,11 +38,9 @@ WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
 
 - `core`: checks the curated core URL list every 5 minutes with no GitHub inventory fetch.
 - `self`: checks server resources and expected Watchtower timers every 5 minutes.
-- `light`: checks the curated core URL list about every 30 minutes.
 - `github-lite`: checks recent GitHub project health about every 15 minutes with a small API and URL budget.
 - `daily`: fetches the Digidai public repository inventory, checks repo homepages, samples README links, and checks recent repo workflow status.
 - `weekly`: deeper checks with a larger URL and byte budget.
-- `venture`: every 15 minutes, pulls VentureDex startup profiles from `https://venturedex.co/`, extracts canonical company homepages, and checks those homepages within a byte budget.
 - `venture-discover`: refreshes the VentureDex profile/company cache hourly.
 - `venture-check`: checks a rotating cached batch of VentureDex company homepages every 10 minutes.
 

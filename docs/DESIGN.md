@@ -7,9 +7,9 @@ Digidai public project ecosystem. The server periodically checks GitHub project
 metadata, product URLs, certificates, response times, and local resource metrics.
 Daily and weekly modes also sample README-discovered links and recent GitHub
 workflow status for active non-fork repositories.
-The `venture` mode uses VentureDex as a curated source list, extracts canonical
-company homepages from startup profile JSON-LD, and checks those homepages every
-15 minutes as observed third-party targets.
+VentureDex monitoring uses VentureDex as a curated source list, extracts
+canonical company homepages from startup profile JSON-LD, caches them, and checks
+rotating batches as observed third-party targets.
 The phase-one scheduler splits high-frequency work into small modes: `core` and
 `self` every 5 minutes, `github-lite` every 15 minutes, `venture-check` every 10
 minutes, and `venture-discover` hourly.

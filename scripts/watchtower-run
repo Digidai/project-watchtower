@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-MODE="${1:-light}"
+MODE="${1:-core}"
 case "$MODE" in
-  core|self|light|github-lite|daily|weekly|venture|venture-check|venture-discover) ;;
+  core|self|github-lite|daily|weekly|venture-check|venture-discover) ;;
   *) echo "invalid mode: $MODE" >&2; exit 64 ;;
 esac
 
