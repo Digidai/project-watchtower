@@ -50,6 +50,11 @@ WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
 The dashboard service serves `/var/lib/project-watchtower/reports/index.html` on HTTP port `80`.
 The page aggregates the newest report per mode, self-check service state, resource metrics,
 and current failures.
+It is still rendered as dependency-free static HTML, with an in-page English/Chinese
+language switch that stores the selected language in browser local storage.
+The HTTP server disables directory listings and adds conservative response headers
+for no-store caching, clickjacking protection, content-type sniffing protection,
+and a self-only content security policy.
 
 ## GitHub Actions Setup
 

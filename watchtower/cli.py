@@ -1328,6 +1328,30 @@ DASHBOARD_CSS = """
       font-weight: 700;
       color: var(--text);
     }
+    .lang-switch {
+      display: inline-flex;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+    }
+    .lang-switch button {
+      min-width: 42px;
+      border: 0;
+      border-right: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 800;
+      padding: 6px 10px;
+    }
+    .lang-switch button:last-child { border-right: 0; }
+    .lang-switch button[aria-pressed="true"] {
+      background: var(--text);
+      color: var(--surface);
+    }
     .status-band {
       --accent: var(--primary);
       display: grid;
@@ -1630,6 +1654,38 @@ DASHBOARD_CSS = """
 """
 
 
+DASHBOARD_JS = """
+    (() => {
+      const root = document.documentElement;
+      const choices = Array.from(document.querySelectorAll("[data-lang-choice]"));
+      const translatable = Array.from(document.querySelectorAll("[data-en][data-zh]"));
+      const stored = localStorage.getItem("watchtower-lang");
+      const query = new URLSearchParams(location.search).get("lang");
+      const browser = navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+      const initial = query === "zh" || query === "en" ? query : stored || browser;
+
+      function setLanguage(lang) {
+        const next = lang === "zh" ? "zh" : "en";
+        root.lang = next === "zh" ? "zh-CN" : "en";
+        root.dataset.lang = next;
+        localStorage.setItem("watchtower-lang", next);
+        translatable.forEach((node) => {
+          node.textContent = node.dataset[next] || node.dataset.en || "";
+        });
+        choices.forEach((button) => {
+          const active = button.dataset.langChoice === next;
+          button.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+      }
+
+      choices.forEach((button) => {
+        button.addEventListener("click", () => setLanguage(button.dataset.langChoice));
+      });
+      setLanguage(initial);
+    })();
+"""
+
+
 def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
     reports = load_latest_reports_by_mode(output_dir, current)
     mode_order = ["core", "self", "github-lite", "venture-check", "venture-discover", "daily", "weekly"]
@@ -1644,6 +1700,21 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
 
     def esc(value: Any) -> str:
         return html.escape(str(value if value is not None else "-"))
+
+    def attr(value: Any) -> str:
+        return html.escape(str(value if value is not None else "-"), quote=True)
+
+    def dual(en: Any, zh: Any, tag: str = "span", attrs: str = "") -> str:
+        return f"<{tag}{attrs} data-en=\"{attr(en)}\" data-zh=\"{attr(zh)}\">{esc(en)}</{tag}>"
+
+    def status_label(status: str) -> tuple[str, str]:
+        normalized = dashboard_class(status)
+        return {
+            "ok": ("ok", "正常"),
+            "warn": ("warn", "注意"),
+            "fail": ("fail", "故障"),
+            "muted": (str(status or "unknown"), "未知"),
+        }[normalized]
 
     summaries = [
         report.get("summary")
@@ -1665,7 +1736,12 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
         if isinstance(reports[mode].get("resource_budget"), dict)
     )
     overall_status = "fail" if fail_count else "warn" if warn_count else "ok"
-    overall_label = {"ok": "Healthy", "warn": "Needs attention", "fail": "Failing"}[overall_status]
+    overall_labels = {
+        "ok": ("Healthy", "运行正常"),
+        "warn": ("Needs attention", "需要关注"),
+        "fail": ("Failing", "存在故障"),
+    }
+    overall_label_en, overall_label_zh = overall_labels[overall_status]
 
     cpu_count = max(1, safe_int(system.get("cpu_count")) or (os.cpu_count() or 1))
     one_min_load = safe_float(loadavg[0]) if isinstance(loadavg, (list, tuple)) and loadavg else 0.0
@@ -1679,7 +1755,8 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
     raw_load_pct = one_min_load / cpu_count * 100.0 if cpu_count else 0.0
     load_pct = max(0.0, min(100.0, raw_load_pct))
     memory_value = fmt_bytes(mem_available) if mem_total > 0 else "-"
-    memory_detail = f"{fmt_percent(mem_available, mem_total)} available of {fmt_bytes(mem_total)}" if mem_total > 0 else "not reported"
+    memory_detail_en = f"{fmt_percent(mem_available, mem_total)} available of {fmt_bytes(mem_total)}" if mem_total > 0 else "not reported"
+    memory_detail_zh = f"{fmt_percent(mem_available, mem_total)} 可用，共 {fmt_bytes(mem_total)}" if mem_total > 0 else "未上报"
     memory_tone = "ok" if mem_pct >= 25 else "warn" if mem_pct >= 12 else "fail" if mem_total > 0 else "muted"
     disk_tone = "ok" if disk_pct >= 25 else "warn" if disk_pct >= 10 else "fail" if disk_total > 0 else "muted"
     load_tone = "ok" if raw_load_pct <= 75 else "warn" if raw_load_pct <= 120 else "fail" if loadavg else "muted"
@@ -1699,13 +1776,23 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
             "</div>"
         )
 
-    def metric_card(label: str, value_html: str, detail: str, tone: str = "muted", progress: float | None = None) -> str:
-        progress_html = progress_bar(label, progress) if progress is not None else ""
+    def metric_card(
+        label_en: str,
+        label_zh: str,
+        value_html: str,
+        detail_en: str,
+        detail_zh: str,
+        tone: str = "muted",
+        progress: float | None = None,
+    ) -> str:
+        progress_html = progress_bar(label_en, progress) if progress is not None else ""
+        label_html = dual(label_en, label_zh, "div", " class='metric-label'")
+        detail_html = dual(detail_en, detail_zh, "div", " class='metric-detail'")
         return (
             f"<article class='metric-card tone-{dashboard_class(tone)}'>"
-            f"<div class='metric-label'>{esc(label)}</div>"
+            f"{label_html}"
             f"<div class='metric-value'>{value_html}</div>"
-            f"<div class='metric-detail'>{esc(detail)}</div>"
+            f"{detail_html}"
             f"{progress_html}"
             "</article>"
         )
@@ -1713,53 +1800,69 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
     metric_cards = [
         metric_card(
             "Overall",
-            f"<span class='chip {overall_status}'>{esc(overall_label)}</span>",
+            "总体状态",
+            dual(overall_label_en, overall_label_zh, "span", f" class='chip {overall_status}'"),
             f"{ok_count} ok / {warn_count} warn / {fail_count} fail",
+            f"{ok_count} 正常 / {warn_count} 注意 / {fail_count} 故障",
             overall_status,
         ),
         metric_card(
             "URL Checks",
+            "URL 检测",
             esc(fmt_number(total_urls)),
             f"{fmt_number(total_url_failures)} failing, {fmt_number(total_critical_url_failures)} critical",
+            f"{fmt_number(total_url_failures)} 个异常，{fmt_number(total_critical_url_failures)} 个关键异常",
             "fail" if total_critical_url_failures else "warn" if total_url_failures else "ok",
         ),
         metric_card(
             "Service Issues",
+            "服务问题",
             esc(fmt_number(total_self_failures)),
             f"{fmt_number(total_repo_failures)} GitHub repo check issues",
+            f"{fmt_number(total_repo_failures)} 个 GitHub 仓库检查问题",
             "fail" if total_self_failures else "warn" if total_repo_failures else "ok",
         ),
         metric_card(
             "Traffic Read",
+            "读取流量",
             esc(fmt_bytes(total_bytes_read)),
             "bounded body bytes across latest reports",
+            "最新报告累计读取的受限正文流量",
             "muted",
         ),
         metric_card(
             "Memory",
+            "内存",
             esc(memory_value),
-            memory_detail,
+            memory_detail_en,
+            memory_detail_zh,
             memory_tone,
             mem_pct if mem_total > 0 else None,
         ),
         metric_card(
             "Disk",
+            "磁盘",
             esc(fmt_bytes(disk_free)),
             f"{fmt_percent(disk_free, disk_total)} free of {fmt_bytes(disk_total)}",
+            f"{fmt_percent(disk_free, disk_total)} 可用，共 {fmt_bytes(disk_total)}",
             disk_tone,
             disk_pct if disk_total > 0 else None,
         ),
         metric_card(
             "CPU Load",
+            "CPU 负载",
             esc(f"{one_min_load:.2f}"),
             f"{cpu_count} CPU, load averages {load_text}",
+            f"{cpu_count} 核，平均负载 {load_text}",
             load_tone,
             load_pct if loadavg else None,
         ),
         metric_card(
             "Network",
+            "网络",
             esc(fmt_bytes(rx_total + tx_total)),
             f"RX {fmt_bytes(rx_total)} / TX {fmt_bytes(tx_total)} cumulative",
+            f"累计接收 {fmt_bytes(rx_total)} / 发送 {fmt_bytes(tx_total)}",
             "muted",
         ),
     ]
@@ -1777,15 +1880,20 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
         repo_failures = safe_int(summary.get("failed_repo_check_count"))
         self_checks = safe_int(summary.get("self_check_count"))
         self_failures = safe_int(summary.get("failed_self_check_count"))
+        status_en, status_zh = status_label(status)
+        status_chip = dual(status_en, status_zh, "span", f" class='chip {dashboard_class(status)}'")
+        critical_detail = dual(f"{critical_failures} critical", f"{critical_failures} 个关键异常", "small")
+        repo_detail = dual(f"of {repo_checks} ok", f"共 {repo_checks} 个正常", "small")
+        self_detail = dual(f"of {self_checks} ok", f"共 {self_checks} 个正常", "small")
         rows.append(
             f"<tr class='row-{dashboard_class(status)}'>"
             f"<td><span class='mode-name'>{esc(mode)}</span></td>"
-            f"<td><span class='chip {dashboard_class(status)}'>{esc(status)}</span></td>"
+            f"<td>{status_chip}</td>"
             f"<td class='nowrap'>{esc(fmt_time(run.get('completed_at')))}</td>"
             f"<td>{esc(fmt_number(summary.get('url_count')))}</td>"
-            f"<td>{esc(fmt_number(url_failures))}<small>{esc(f'{critical_failures} critical')}</small></td>"
-            f"<td>{esc(fmt_number(repo_checks - repo_failures))}<small>{esc(f'of {repo_checks} ok')}</small></td>"
-            f"<td>{esc(fmt_number(self_checks - self_failures))}<small>{esc(f'of {self_checks} ok')}</small></td>"
+            f"<td>{esc(fmt_number(url_failures))}{critical_detail}</td>"
+            f"<td>{esc(fmt_number(repo_checks - repo_failures))}{repo_detail}</td>"
+            f"<td>{esc(fmt_number(self_checks - self_failures))}{self_detail}</td>"
             f"<td>{esc(fmt_bytes(budget.get('bytes_read')))}</td>"
             "</tr>"
         )
@@ -1800,9 +1908,11 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
     for check in service_checks:
         name = str(check.get("name") or "")
         status = str(check.get("status") or ("ok" if check.get("ok") else "warn"))
+        status_en, status_zh = status_label(status)
+        status_chip = dual(status_en, status_zh, "span", f" class='chip {dashboard_class(status)}'")
         service_cards.append(
             f"<article class='service-card tone-{dashboard_class(status)}'>"
-            f"<span class='chip {dashboard_class(status)}'>{esc(status)}</span>"
+            f"{status_chip}"
             f"<div><strong>{esc(name)}</strong><small>{esc(check.get('detail') or '')}</small></div>"
             "</article>"
         )
@@ -1832,9 +1942,11 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
 
     failure_items: list[str] = []
     for tone, mode, kind, title, detail in issues[:80]:
+        tone_en, tone_zh = status_label(tone)
+        tone_chip = dual(tone_en, tone_zh, "span", f" class='chip {tone}'")
         failure_items.append(
             "<li class='issue-item'>"
-            f"<span class='chip {tone}'>{esc(tone)}</span>"
+            f"{tone_chip}"
             "<div>"
             f"<strong>{esc(title or kind)}</strong>"
             f"<small>{esc(mode)} / {esc(kind)}</small>"
@@ -1843,16 +1955,20 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
             "</li>"
         )
     if len(issues) > 80:
+        more_chip = dual("more", "更多", "span", " class='chip muted'")
         failure_items.append(
             "<li class='issue-item'>"
-            f"<span class='chip muted'>more</span><div><strong>{esc(len(issues) - 80)} additional issues</strong>"
-            "<small>Open latest JSON for the full set.</small></div></li>"
+            f"{more_chip}<div>"
+            f"{dual(f'{len(issues) - 80} additional issues', f'还有 {len(issues) - 80} 个问题', 'strong')}"
+            f"{dual('Open latest JSON for the full set.', '打开最新 JSON 查看完整列表。', 'small')}</div></li>"
         )
     if not failure_items:
+        ok_chip = dual("ok", "正常", "span", " class='chip ok'")
         failure_items.append(
             "<li class='issue-item'>"
-            "<span class='chip ok'>ok</span>"
-            "<div><strong>No current failures</strong><small>latest report per mode</small></div>"
+            f"{ok_chip}"
+            f"<div>{dual('No current failures', '当前没有故障', 'strong')}"
+            f"{dual('latest report per mode', '按每个模式的最新报告汇总', 'small')}</div>"
             "</li>"
         )
 
@@ -1868,25 +1984,38 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
             "</tr>"
         )
     network_table = (
-        "<div class='table-shell'><table><thead><tr><th>Interface</th><th>RX Bytes</th><th>RX Packets</th><th>TX Bytes</th><th>TX Packets</th></tr></thead>"
+        "<div class='table-shell'><table><thead><tr>"
+        f"<th>{dual('Interface', '网卡')}</th>"
+        f"<th>{dual('RX Bytes', '接收字节')}</th>"
+        f"<th>{dual('RX Packets', '接收包数')}</th>"
+        f"<th>{dual('TX Bytes', '发送字节')}</th>"
+        f"<th>{dual('TX Packets', '发送包数')}</th>"
+        "</tr></thead>"
         f"<tbody>{''.join(network_rows)}</tbody></table></div>"
         if network_rows
-        else "<div class='empty-state'>No public network interface counters in the latest self report.</div>"
+        else f"<div class='empty-state'>{dual('No public network interface counters in the latest self report.', '最新 self 报告里没有公网网卡计数器。')}</div>"
     )
 
     service_section = (
         f"<div class='service-grid'>{''.join(service_cards)}</div>"
         if service_cards
-        else "<div class='empty-state'>No self-check report yet.</div>"
+        else f"<div class='empty-state'>{dual('No self-check report yet.', '还没有 self-check 报告。')}</div>"
     )
     generated = esc(fmt_time(current.get("run", {}).get("completed_at") or utc_now()))
     host = esc(system.get("hostname") or "-")
     latest_mode = esc(report_mode(current))
     mode_count = esc(fmt_number(len(ordered_modes)))
-    total_failures_label = esc(fmt_number(total_failures))
+    status_copy_en = (
+        f"Latest mode is {latest_mode}. Current aggregate has {fmt_number(total_urls)} URL checks, "
+        f"{fmt_number(total_failures)} total issues, and {fmt_bytes(total_bytes_read)} bounded traffic read."
+    )
+    status_copy_zh = (
+        f"最新模式是 {latest_mode}。当前汇总包含 {fmt_number(total_urls)} 个 URL 检测、"
+        f"{fmt_number(total_failures)} 个问题，以及 {fmt_bytes(total_bytes_read)} 受限读取流量。"
+    )
 
     return f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1898,32 +2027,35 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
 <main class="app-shell">
   <header class="topbar">
     <div>
-      <p class="eyebrow">Project Watchtower</p>
-      <h1>Operational Status</h1>
+      {dual('Project Watchtower', 'Project Watchtower', 'p', ' class="eyebrow"')}
+      {dual('Operational Status', '运行状态', 'h1')}
     </div>
     <div class="top-meta">
-      <span>Generated {generated}</span>
+      {dual(f'Generated {generated}', f'生成时间 {generated}')}
       <a class="link-pill" href="/latest.json">JSON</a>
       <a class="link-pill" href="/latest.md">Markdown</a>
+      <span class="lang-switch" role="group" aria-label="Language">
+        <button type="button" data-lang-choice="en" aria-pressed="true">EN</button>
+        <button type="button" data-lang-choice="zh" aria-pressed="false">中文</button>
+      </span>
     </div>
   </header>
 
   <section class="status-band tone-{overall_status}">
     <div>
       <div class="status-title">
-        <span class="chip {overall_status}">{esc(overall_label)}</span>
-        <strong>{mode_count} monitored modes</strong>
+        {dual(overall_label_en, overall_label_zh, 'span', f' class="chip {overall_status}"')}
+        {dual(f'{mode_count} monitored modes', f'{mode_count} 个监控模式', 'strong')}
       </div>
       <div class="status-copy">
-        Latest mode is {latest_mode}. Current aggregate has {esc(fmt_number(total_urls))} URL checks,
-        {total_failures_label} total issues, and {esc(fmt_bytes(total_bytes_read))} bounded traffic read.
+        {dual(status_copy_en, status_copy_zh)}
       </div>
     </div>
     <div class="status-facts">
-      <div class="fact"><span>Host</span><strong>{host}</strong></div>
-      <div class="fact"><span>Refresh</span><strong>60 seconds</strong></div>
-      <div class="fact"><span>CPU</span><strong>{esc(cpu_count)} cores</strong></div>
-      <div class="fact"><span>Load</span><strong>{esc(load_text)}</strong></div>
+      <div class="fact">{dual('Host', '主机', 'span')}<strong>{host}</strong></div>
+      <div class="fact">{dual('Refresh', '刷新', 'span')}{dual('60 seconds', '60 秒', 'strong')}</div>
+      <div class="fact">{dual('CPU', 'CPU', 'span')}{dual(f'{cpu_count} cores', f'{cpu_count} 核', 'strong')}</div>
+      <div class="fact">{dual('Load', '负载', 'span')}<strong>{esc(load_text)}</strong></div>
     </div>
   </section>
 
@@ -1933,13 +2065,22 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
 
   <section>
     <div class="section-header">
-      <h2>Mode Status</h2>
-      <small>Newest report retained per mode</small>
+      {dual('Mode Status', '模式状态', 'h2')}
+      {dual('Newest report retained per mode', '每个模式保留的最新报告', 'small')}
     </div>
     <div class="table-shell">
       <table>
         <thead>
-          <tr><th>Mode</th><th>Status</th><th>Completed</th><th>URLs</th><th>URL Fail</th><th>Repo Checks</th><th>Self Checks</th><th>Bytes</th></tr>
+          <tr>
+            <th>{dual('Mode', '模式')}</th>
+            <th>{dual('Status', '状态')}</th>
+            <th>{dual('Completed', '完成时间')}</th>
+            <th>{dual('URLs', 'URL')}</th>
+            <th>{dual('URL Fail', 'URL 异常')}</th>
+            <th>{dual('Repo Checks', '仓库检查')}</th>
+            <th>{dual('Self Checks', '自检')}</th>
+            <th>{dual('Bytes', '字节')}</th>
+          </tr>
         </thead>
         <tbody>{''.join(rows)}</tbody>
       </table>
@@ -1948,28 +2089,29 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
 
   <section>
     <div class="section-header">
-      <h2>Service Health</h2>
-      <small>Timer and host checks from self mode</small>
+      {dual('Service Health', '服务健康', 'h2')}
+      {dual('Timer and host checks from self mode', '来自 self 模式的 timer 和主机检查', 'small')}
     </div>
     {service_section}
   </section>
 
   <section>
     <div class="section-header">
-      <h2>Current Issues</h2>
-      <small>Services, URLs, and GitHub checks</small>
+      {dual('Current Issues', '当前问题', 'h2')}
+      {dual('Services, URLs, and GitHub checks', '服务、URL 和 GitHub 检查', 'small')}
     </div>
     <ul class="issue-list">{''.join(failure_items)}</ul>
   </section>
 
   <section>
     <div class="section-header">
-      <h2>Network Interfaces</h2>
-      <small>Cumulative counters from the latest self report</small>
+      {dual('Network Interfaces', '网络接口', 'h2')}
+      {dual('Cumulative counters from the latest self report', '最新 self 报告中的累计计数器', 'small')}
     </div>
     {network_table}
   </section>
 </main>
+<script>{DASHBOARD_JS}</script>
 </body>
 </html>
 """
@@ -2178,8 +2320,29 @@ def serve(args: argparse.Namespace) -> int:
     import http.server
 
     directory = str(Path(args.output_dir).resolve())
-    os.chdir(directory)
-    handler = http.server.SimpleHTTPRequestHandler
+
+    class WatchtowerHTTPHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *handler_args: Any, **handler_kwargs: Any) -> None:
+            super().__init__(*handler_args, directory=directory, **handler_kwargs)
+
+        def list_directory(self, path: str) -> None:  # type: ignore[override]
+            self.send_error(404, "directory listing disabled")
+            return None
+
+        def end_headers(self) -> None:
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "base-uri 'none'; frame-ancestors 'none'",
+            )
+            super().end_headers()
+
+    handler = WatchtowerHTTPHandler
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Serving {directory} on http://{args.host}:{args.port}", flush=True)
     server.serve_forever()
