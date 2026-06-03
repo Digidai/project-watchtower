@@ -149,6 +149,59 @@
       "project-watchtower-daily.timer",
       "project-watchtower-venture-check.timer",
       "project-watchtower-venture-discover.timer"
-    ]
+    ],
+    "self_expected_services": [
+      "xray-vless-global.service",
+      "hysteria2-surge-test.service",
+      "equaldcdn-sync.timer"
+    ],
+    "self_expected_listeners": [
+      {
+        "name": "hy2_udp_entry",
+        "protocol": "udp",
+        "listen": "*",
+        "port": 443
+      },
+      {
+        "name": "xray_http_in",
+        "protocol": "tcp",
+        "listen": "127.0.0.1",
+        "port": 7890
+      },
+      {
+        "name": "xray_socks_tcp",
+        "protocol": "tcp",
+        "listen": "127.0.0.1",
+        "port": 7891
+      },
+      {
+        "name": "xray_socks_udp",
+        "protocol": "udp",
+        "listen": "127.0.0.1",
+        "port": 7891
+      }
+    ],
+    "self_xray_config": {
+      "path": "/etc/xray-vless-global/config.json",
+      "expected_outbound_tags": [
+        "exclusive-static-residential",
+        "direct",
+        "block"
+      ],
+      "exclusive_tag": "exclusive-static-residential",
+      "expected_server": "67.230.175.91",
+      "expected_port": 443,
+      "forbidden_terms": [
+        "relay-out",
+        "dialerProxy"
+      ]
+    },
+    "self_proxy_exit": {
+      "name": "oracle_hy2_residential_exit",
+      "socks_host": "127.0.0.1",
+      "socks_port": 7891,
+      "url": "https://ipinfo.io/ip",
+      "expected_ip": "48.47.18.69"
+    }
   }
 }

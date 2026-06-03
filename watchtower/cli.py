@@ -979,6 +979,170 @@ def systemctl_is_active(unit: str) -> str:
     return completed.stdout.strip() or f"exit:{completed.returncode}"
 
 
+def command_stdout(args: list[str], timeout: int = 8) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(
+            args,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return 127, f"error:{type(exc).__name__}"
+    return completed.returncode, completed.stdout.strip()
+
+
+def parse_ss_listeners(text: str) -> list[dict[str, str]]:
+    listeners: list[dict[str, str]] = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        proto = fields[0].lower()
+        if proto not in {"tcp", "udp"}:
+            continue
+        local = fields[4]
+        address, sep, port = local.rpartition(":")
+        if not sep:
+            continue
+        listeners.append({
+            "protocol": proto,
+            "address": address or "*",
+            "port": port,
+            "local": local,
+        })
+    return listeners
+
+
+def listener_matches(listener: dict[str, str], protocol: str, listen: str, port: int) -> bool:
+    if listener.get("protocol") != protocol.lower():
+        return False
+    if listener.get("port") != str(port):
+        return False
+    if listen == "*":
+        return True
+    return listener.get("address") == listen
+
+
+def collect_listener_checks(policy: dict[str, Any]) -> list[SelfCheck]:
+    expected = policy.get("self_expected_listeners", [])
+    if not isinstance(expected, list) or not expected:
+        return []
+    code, stdout = command_stdout(["ss", "-H", "-lunt"], timeout=8)
+    if code != 0:
+        return [SelfCheck(
+            name="proxy_listener:ss",
+            ok=False,
+            status="fail",
+            detail=stdout or f"ss exit {code}",
+        )]
+    listeners = parse_ss_listeners(stdout)
+    checks: list[SelfCheck] = []
+    for item in expected:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "listener")
+        protocol = str(item.get("protocol") or "").lower()
+        listen = str(item.get("listen") or "*")
+        port = int(item.get("port") or 0)
+        matches = [listener for listener in listeners if listener_matches(listener, protocol, listen, port)]
+        checks.append(SelfCheck(
+            name=f"proxy_listener:{name}",
+            ok=bool(matches),
+            status="ok" if matches else "fail",
+            detail=matches[0]["local"] if matches else f"missing {protocol} {listen}:{port}",
+        ))
+    return checks
+
+
+def collect_xray_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
+    cfg = policy.get("self_xray_config")
+    if not isinstance(cfg, dict):
+        return []
+    path = Path(str(cfg.get("path") or ""))
+    name = "proxy_xray_config"
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
+    except Exception as exc:
+        return [SelfCheck(name=name, ok=False, status="fail", detail=f"{path}: {type(exc).__name__}")]
+
+    actual_tags = [str(outbound.get("tag") or "") for outbound in data.get("outbounds", []) if isinstance(outbound, dict)]
+    expected_tags = [str(tag) for tag in cfg.get("expected_outbound_tags", [])]
+    forbidden_terms = [str(term) for term in cfg.get("forbidden_terms", [])]
+    forbidden_present = [term for term in forbidden_terms if term in text]
+
+    exclusive_tag = str(cfg.get("exclusive_tag") or "")
+    expected_server = str(cfg.get("expected_server") or "")
+    expected_port = int(cfg.get("expected_port") or 0)
+    actual_server = ""
+    actual_port = 0
+    for outbound in data.get("outbounds", []):
+        if not isinstance(outbound, dict) or outbound.get("tag") != exclusive_tag:
+            continue
+        vnext = outbound.get("settings", {}).get("vnext", [{}])
+        if isinstance(vnext, list) and vnext and isinstance(vnext[0], dict):
+            actual_server = str(vnext[0].get("address") or "")
+            actual_port = int(vnext[0].get("port") or 0)
+
+    tags_ok = set(actual_tags) == set(expected_tags)
+    forbidden_ok = not forbidden_present
+    server_ok = actual_server == expected_server and actual_port == expected_port
+    ok = tags_ok and forbidden_ok and server_ok
+    details = [
+        f"outbounds {','.join(actual_tags) or 'none'}",
+        f"server {actual_server}:{actual_port}" if actual_server else "server missing",
+    ]
+    if forbidden_present:
+        details.append(f"forbidden {','.join(forbidden_present)}")
+    return [SelfCheck(
+        name=name,
+        ok=ok,
+        status="ok" if ok else "fail",
+        detail="; ".join(details),
+    )]
+
+
+def collect_proxy_exit_check(policy: dict[str, Any]) -> list[SelfCheck]:
+    cfg = policy.get("self_proxy_exit")
+    if not isinstance(cfg, dict):
+        return []
+    name = str(cfg.get("name") or "proxy_exit")
+    host = str(cfg.get("socks_host") or "127.0.0.1")
+    port = int(cfg.get("socks_port") or 0)
+    url = str(cfg.get("url") or "https://ipinfo.io/ip")
+    expected_ip = str(cfg.get("expected_ip") or "")
+    if not port or not expected_ip:
+        return []
+    code, stdout = command_stdout(
+        [
+            "curl",
+            "-4sS",
+            "--socks5-hostname",
+            f"{host}:{port}",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            "12",
+            url,
+        ],
+        timeout=15,
+    )
+    actual_ip = stdout.splitlines()[0].strip() if stdout else ""
+    ok = code == 0 and actual_ip == expected_ip
+    detail = f"{actual_ip or 'empty'} via {host}:{port}, expected {expected_ip}"
+    if code != 0:
+        detail = f"curl exit {code}; {detail}"
+    return [SelfCheck(
+        name=f"proxy_exit:{name}",
+        ok=ok,
+        status="ok" if ok else "fail",
+        detail=detail,
+    )]
+
+
 def collect_self_checks(config: dict[str, Any], system_metrics: dict[str, Any]) -> list[SelfCheck]:
     policy = config.get("policy", {})
     checks: list[SelfCheck] = []
@@ -1028,6 +1192,20 @@ def collect_self_checks(config: dict[str, Any], system_metrics: dict[str, Any]) 
             status="ok" if status == "active" else "fail",
             detail=status,
         ))
+
+    services = list(policy.get("self_expected_services", []))
+    for unit in services:
+        status = systemctl_is_active(str(unit))
+        checks.append(SelfCheck(
+            name=f"service:{unit}",
+            ok=status == "active",
+            status="ok" if status == "active" else "fail",
+            detail=status,
+        ))
+
+    checks.extend(collect_listener_checks(policy))
+    checks.extend(collect_xray_config_check(policy))
+    checks.extend(collect_proxy_exit_check(policy))
 
     return checks
 
@@ -2293,7 +2471,7 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
   <section>
     <div class="section-header">
       {dual('Service Health', '服务健康', 'h2')}
-      {dual('Timer and host checks from self mode', '来自 self 模式的 timer 和主机检查', 'small')}
+      {dual('Host, timer, and proxy checks from self mode', '来自 self 模式的主机、timer 和代理检查', 'small')}
     </div>
     {service_section}
   </section>
