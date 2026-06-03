@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "oracle-watchtower-proxy",
+  "main": "./oracle-watchtower-proxy.js",
+  "compatibility_date": "2026-06-03",
+  "account_id": "48d9ccaf5ee7914c803b5d0656462848",
+  "routes": [
+    {
+      "pattern": "oracle.syncany.app/*",
+      "zone_name": "syncany.app"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

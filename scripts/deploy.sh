@@ -8,9 +8,13 @@ PORT="${WATCHTOWER_PORT:-22}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE="$(mktemp -t project-watchtower.XXXXXX.tar.gz)"
 AUTHORIZED_KEY_B64=""
+DASHBOARD_PASSWORD_B64="${WATCHTOWER_DASHBOARD_PASSWORD_B64:-}"
 
 if [ -n "${WATCHTOWER_AUTHORIZED_KEY:-}" ]; then
   AUTHORIZED_KEY_B64="$(printf '%s' "$WATCHTOWER_AUTHORIZED_KEY" | base64 | tr -d '\n')"
+fi
+if [ -z "$DASHBOARD_PASSWORD_B64" ] && [ -n "${WATCHTOWER_DASHBOARD_PASSWORD:-}" ]; then
+  DASHBOARD_PASSWORD_B64="$(printf '%s' "$WATCHTOWER_DASHBOARD_PASSWORD" | base64 | tr -d '\n')"
 fi
 
 cleanup() {
@@ -45,7 +49,7 @@ scp_opts=(
 
 scp "${scp_opts[@]}" "$ARCHIVE" "$USER@$HOST:/tmp/project-watchtower.tar.gz"
 
-ssh "${ssh_opts[@]}" "$USER@$HOST" "WATCHTOWER_AUTHORIZED_KEY_B64='$AUTHORIZED_KEY_B64' bash -s" <<'REMOTE'
+ssh "${ssh_opts[@]}" "$USER@$HOST" "WATCHTOWER_AUTHORIZED_KEY_B64='$AUTHORIZED_KEY_B64' WATCHTOWER_DASHBOARD_PASSWORD_B64='$DASHBOARD_PASSWORD_B64' bash -s" <<'REMOTE'
 set -Eeuo pipefail
 
 command -v python3 >/dev/null
@@ -71,6 +75,14 @@ if [ -n "${WATCHTOWER_AUTHORIZED_KEY_B64:-}" ]; then
   sudo install -d -m 700 -o watchtower -g watchtower /var/lib/project-watchtower/.ssh
   sudo install -m 600 -o watchtower -g watchtower "$tmp_authorized" /var/lib/project-watchtower/.ssh/authorized_keys
   rm -f "$tmp_authorized"
+fi
+
+if [ -n "${WATCHTOWER_DASHBOARD_PASSWORD_B64:-}" ]; then
+  tmp_dashboard_env="$(mktemp)"
+  printf 'WATCHTOWER_DASHBOARD_PASSWORD_B64=%s\n' "$WATCHTOWER_DASHBOARD_PASSWORD_B64" > "$tmp_dashboard_env"
+  sudo install -d -m 700 -o root -g root /etc/project-watchtower
+  sudo install -m 600 -o root -g root "$tmp_dashboard_env" /etc/project-watchtower/dashboard.env
+  rm -f "$tmp_dashboard_env"
 fi
 
 for unit in /opt/project-watchtower/systemd/project-watchtower-*; do

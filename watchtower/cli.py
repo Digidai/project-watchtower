@@ -14,6 +14,7 @@ import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
+import hmac
 import html
 import ipaddress
 import json
@@ -1686,6 +1687,208 @@ DASHBOARD_JS = """
 """
 
 
+LOCKED_DASHBOARD_CSS = """
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f6f1;
+      --surface: #ffffff;
+      --text: #1c1f23;
+      --muted: #667085;
+      --border: #d8ded2;
+      --accent: #0f766e;
+      --danger: #c0262d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 20px;
+      letter-spacing: 0;
+    }
+    main {
+      width: min(760px, 100%);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+      padding: clamp(24px, 5vw, 44px);
+      box-shadow: 0 18px 60px rgba(28, 31, 35, 0.1);
+    }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 6vw, 50px);
+      line-height: 1.04;
+      letter-spacing: 0;
+    }
+    .lead {
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    .notice {
+      margin: 22px 0;
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      padding: 14px 16px;
+      color: var(--muted);
+      line-height: 1.65;
+      font-size: 14px;
+      background: color-mix(in srgb, var(--surface), var(--bg) 45%);
+    }
+    form {
+      display: grid;
+      gap: 10px;
+      margin-top: 22px;
+    }
+    label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    .form-row {
+      display: flex;
+      gap: 8px;
+    }
+    input {
+      min-width: 0;
+      flex: 1;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      padding: 12px 13px;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: var(--text);
+      color: var(--surface);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 800;
+      padding: 12px 16px;
+      white-space: nowrap;
+    }
+    .error {
+      color: var(--danger);
+      font-size: 13px;
+      font-weight: 700;
+      margin: 4px 0 0;
+    }
+    .fine-print {
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    @media (max-width: 560px) {
+      .form-row { flex-direction: column; }
+      button { width: 100%; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #10120f;
+        --surface: #181b17;
+        --text: #ecefeb;
+        --muted: #a8b2a1;
+        --border: #343b31;
+        --accent: #46b7a9;
+        --danger: #ee6468;
+      }
+    }
+"""
+
+
+def dashboard_password() -> str:
+    plain = os.environ.get("WATCHTOWER_DASHBOARD_PASSWORD")
+    if plain:
+        return plain
+    encoded = os.environ.get("WATCHTOWER_DASHBOARD_PASSWORD_B64")
+    if not encoded:
+        return ""
+    try:
+        return base64.b64decode(encoded).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def dashboard_auth_token(password: str) -> str:
+    return hmac.new(password.encode("utf-8"), b"project-watchtower-dashboard", hashlib.sha256).hexdigest()
+
+
+def parse_cookie_value(cookie_header: str | None, name: str) -> str | None:
+    if not cookie_header:
+        return None
+    for part in cookie_header.split(";"):
+        key, sep, value = part.strip().partition("=")
+        if sep and key == name:
+            return value
+    return None
+
+
+def render_locked_dashboard(error: bool = False) -> str:
+    error_html = (
+        "<p class='error'>密码不正确，请确认你有授权后再重试。 / Invalid password.</p>"
+        if error
+        else ""
+    )
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project Watchtower</title>
+  <style>{LOCKED_DASHBOARD_CSS}</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Project Watchtower</p>
+  <h1>即将开启的运维状态入口</h1>
+  <p class="lead">
+    这是一个受限的服务器自检与项目可用性监控页面。详细状态、服务计数、网络指标和报告文件仅向授权人员开放。
+  </p>
+  <div class="notice">
+    为避免误解和滥用：本站不提供代理、下载、流量中转、压力测试、爬取服务或任何第三方内容分发能力。
+    未授权访问不会显示内部监控细节；异常请求可能被记录用于安全审计。
+    <br>
+    This endpoint is a restricted operational status surface. It is not a proxy,
+    hosting service, traffic generator, scraper, or public API.
+  </div>
+  <form method="post" action="/login" autocomplete="off">
+    <label for="password">授权密码 / Access password</label>
+    <div class="form-row">
+      <input id="password" name="password" type="password" required autofocus>
+      <button type="submit">查看详情</button>
+    </div>
+    {error_html}
+  </form>
+  <p class="fine-print">
+    如果你不是该实例的维护者，请停止尝试访问。If you are not the operator of this instance,
+    do not attempt to access restricted operational details.
+  </p>
+</main>
+</body>
+</html>
+"""
+
+
 def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
     reports = load_latest_reports_by_mode(output_dir, current)
     mode_order = ["core", "self", "github-lite", "venture-check", "venture-discover", "daily", "weekly"]
@@ -2320,10 +2523,72 @@ def serve(args: argparse.Namespace) -> int:
     import http.server
 
     directory = str(Path(args.output_dir).resolve())
+    password = dashboard_password()
+    cookie_name = "watchtower_auth"
+    expected_token = dashboard_auth_token(password) if password else ""
 
     class WatchtowerHTTPHandler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *handler_args: Any, **handler_kwargs: Any) -> None:
             super().__init__(*handler_args, directory=directory, **handler_kwargs)
+
+        def is_authenticated(self) -> bool:
+            if not password:
+                return True
+            cookie_token = parse_cookie_value(self.headers.get("Cookie"), cookie_name)
+            return bool(cookie_token and hmac.compare_digest(cookie_token, expected_token))
+
+        def send_locked_page(self, status: int = 200, error: bool = False, head_only: bool = False) -> None:
+            body = render_locked_dashboard(error=error).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(body)
+
+        def redirect_to_root(self, cookie_value: str | None = None) -> None:
+            self.send_response(303)
+            self.send_header("Location", "/")
+            if cookie_value is not None:
+                self.send_header("Set-Cookie", cookie_value)
+            self.end_headers()
+
+        def do_POST(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path != "/login":
+                self.send_error(404)
+                return
+            if not password:
+                self.redirect_to_root()
+                return
+            try:
+                length = min(int(self.headers.get("Content-Length", "0")), 4096)
+            except ValueError:
+                length = 0
+            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            fields = urllib.parse.parse_qs(body, keep_blank_values=True)
+            submitted = fields.get("password", [""])[0]
+            if hmac.compare_digest(submitted, password):
+                cookie = f"{cookie_name}={expected_token}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax"
+                self.redirect_to_root(cookie)
+                return
+            self.send_locked_page(status=401, error=True)
+
+        def do_GET(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/logout":
+                self.redirect_to_root(f"{cookie_name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+                return
+            if not self.is_authenticated():
+                self.send_locked_page(status=200)
+                return
+            super().do_GET()
+
+        def do_HEAD(self) -> None:
+            if not self.is_authenticated():
+                self.send_locked_page(status=200, head_only=True)
+                return
+            super().do_HEAD()
 
         def list_directory(self, path: str) -> None:  # type: ignore[override]
             self.send_error(404, "directory listing disabled")

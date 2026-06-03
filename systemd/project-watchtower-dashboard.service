@@ -9,6 +9,7 @@ User=watchtower
 Group=watchtower
 WorkingDirectory=/opt/project-watchtower
 Environment=PYTHONPATH=/opt/project-watchtower
+EnvironmentFile=-/etc/project-watchtower/dashboard.env
 ExecStart=/usr/bin/python3 -m watchtower.cli serve --output-dir /var/lib/project-watchtower/reports --host 0.0.0.0 --port 80
 Restart=always
 RestartSec=5
@@ -30,3 +31,6 @@ RestrictRealtime=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 ReadOnlyPaths=/var/lib/project-watchtower/reports
+
+[Install]
+WantedBy=multi-user.target

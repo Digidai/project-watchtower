@@ -32,6 +32,7 @@ WATCHTOWER_HOST=<server-ip> \
 WATCHTOWER_USER=opc \
 WATCHTOWER_KEY=<path-to-ssh-key> \
 WATCHTOWER_AUTHORIZED_KEY="$(cat .secrets/watchtower_ed25519.pub)" \
+WATCHTOWER_DASHBOARD_PASSWORD=<dashboard-password> \
 ./scripts/deploy.sh
 ```
 
@@ -55,6 +56,25 @@ language switch that stores the selected language in browser local storage.
 The HTTP server disables directory listings and adds conservative response headers
 for no-store caching, clickjacking protection, content-type sniffing protection,
 and a self-only content security policy.
+When `WATCHTOWER_DASHBOARD_PASSWORD` or `WATCHTOWER_DASHBOARD_PASSWORD_B64` is
+configured, the server shows a restricted pre-launch page until the visitor signs
+in. The deploy script stores the dashboard password in
+`/etc/project-watchtower/dashboard.env` instead of committing it to this repository.
+
+## Cloudflare Domain
+
+`oracle.syncany.app` is served through a Cloudflare Worker route:
+
+- `oracle.syncany.app/*` -> `oracle-watchtower-proxy`
+- `oracle.syncany.app` -> proxied A record for the public instance IP
+- `oracle-origin.syncany.app` -> DNS-only A record for the same origin IP
+
+The Worker keeps HTTPS working at the Cloudflare edge while forwarding requests
+to the dashboard's HTTP-only origin. Redeploy it after proxy changes with:
+
+```bash
+wrangler deploy --config cloudflare/wrangler.oracle.jsonc
+```
 
 ## GitHub Actions Setup
 
