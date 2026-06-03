@@ -63,12 +63,25 @@ jobs:
           : "${WATCHTOWER_HOST:?missing WATCHTOWER_HOST}"
           : "${WATCHTOWER_USER:?missing WATCHTOWER_USER}"
           PORT="${WATCHTOWER_PORT:-22}"
-          ssh \
-            -i ~/.ssh/watchtower \
-            -p "$PORT" \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile=~/.ssh/known_hosts \
-            -o ConnectTimeout=20 \
-            "$WATCHTOWER_USER@$WATCHTOWER_HOST" \
-            "${{ steps.mode.outputs.mode }}" | tee watchtower-result.json
+          status=0
+          for attempt in 1 2 3; do
+            if ssh \
+              -i ~/.ssh/watchtower \
+              -p "$PORT" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o ConnectTimeout=20 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              "$WATCHTOWER_USER@$WATCHTOWER_HOST" \
+              "${{ steps.mode.outputs.mode }}" | tee watchtower-result.json; then
+              exit 0
+            fi
+            status=$?
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 20))
+            fi
+          done
+          exit "$status"
