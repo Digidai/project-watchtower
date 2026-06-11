@@ -40,7 +40,7 @@ WATCHTOWER_DASHBOARD_PASSWORD=<dashboard-password> \
 
 - `core`: checks the curated core URL list every 5 minutes with no GitHub inventory fetch.
 - `self`: checks server resources, expected Watchtower timers, and the Oracle
-  HY2/Xray residential proxy service path every 5 minutes.
+  HY2/Xray/Trojan-WS residential proxy service path every 5 minutes.
 - `github-lite`: checks recent GitHub project health about every 15 minutes with a small API and URL budget.
 - `daily`: fetches the Digidai public repository inventory, checks repo homepages, samples README links, and checks recent repo workflow status.
 - `weekly`: deeper checks with a larger URL and byte budget.
@@ -53,7 +53,8 @@ The dashboard service serves `/var/lib/project-watchtower/reports/index.html` on
 The page aggregates the newest report per mode, self-check service state, resource metrics,
 and current failures.
 The self-check service state includes the Oracle HY2 residential proxy units,
-local Xray listeners, direct residential Xray outbound shape, and SOCKS exit IP.
+the Trojan-WS TCP entry, local Xray listeners, direct residential Xray outbound
+shape, and SOCKS exit IP.
 It is still rendered as dependency-free static HTML, with an in-page English/Chinese
 language switch that stores the selected language in browser local storage.
 The HTTP server disables directory listings and adds conservative response headers

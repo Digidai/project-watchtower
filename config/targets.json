@@ -153,7 +153,8 @@
     "self_expected_services": [
       "xray-vless-global.service",
       "hysteria2-surge-test.service",
-      "equaldcdn-sync.timer"
+      "equaldcdn-sync.timer",
+      "xray-trojan-ws.service"
     ],
     "self_expected_listeners": [
       {
@@ -179,6 +180,12 @@
         "protocol": "udp",
         "listen": "127.0.0.1",
         "port": 7891
+      },
+      {
+        "name": "trojan_ws_tls_entry",
+        "protocol": "tcp",
+        "listen": "*",
+        "port": 443
       }
     ],
     "self_xray_config": {
@@ -195,6 +202,16 @@
         "relay-out",
         "dialerProxy"
       ]
+    },
+    "self_trojan_ws_config": {
+      "path": "/etc/xray-trojan-ws/config.json",
+      "expected_domain": "v2-oracle.syncany.app",
+      "expected_path": "/_syncany_v2_ws_7QmP9x",
+      "expected_inbound_tag": "trojan-ws-tls-in",
+      "expected_inbound_port": 443,
+      "expected_backend_tag": "to-existing-residential-socks",
+      "expected_backend_host": "127.0.0.1",
+      "expected_backend_port": 7891
     },
     "self_proxy_exit": {
       "name": "oracle_hy2_residential_exit",

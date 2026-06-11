@@ -1105,6 +1105,105 @@ def collect_xray_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
     )]
 
 
+def collect_trojan_ws_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
+    cfg = policy.get("self_trojan_ws_config")
+    if not isinstance(cfg, dict):
+        return []
+    path = Path(str(cfg.get("path") or ""))
+    name = "proxy_trojan_ws_config"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [SelfCheck(name=name, ok=False, status="fail", detail=f"{path}: {type(exc).__name__}")]
+
+    expected_domain = str(cfg.get("expected_domain") or "")
+    expected_path = str(cfg.get("expected_path") or "")
+    expected_inbound_tag = str(cfg.get("expected_inbound_tag") or "")
+    expected_inbound_port = int(cfg.get("expected_inbound_port") or 0)
+    expected_backend_tag = str(cfg.get("expected_backend_tag") or "")
+    expected_backend_host = str(cfg.get("expected_backend_host") or "")
+    expected_backend_port = int(cfg.get("expected_backend_port") or 0)
+
+    inbounds = data.get("inbounds", [])
+    inbound = None
+    if isinstance(inbounds, list):
+        for item in inbounds:
+            if not isinstance(item, dict):
+                continue
+            if expected_inbound_tag and item.get("tag") == expected_inbound_tag:
+                inbound = item
+                break
+            if not expected_inbound_tag and item.get("protocol") == "trojan":
+                inbound = item
+                break
+
+    inbound_stream = inbound.get("streamSettings", {}) if isinstance(inbound, dict) else {}
+    if not isinstance(inbound_stream, dict):
+        inbound_stream = {}
+    ws_settings = inbound_stream.get("wsSettings", {})
+    if not isinstance(ws_settings, dict):
+        ws_settings = {}
+    tls_settings = inbound_stream.get("tlsSettings", {})
+    if not isinstance(tls_settings, dict):
+        tls_settings = {}
+    cert_text = json.dumps(tls_settings.get("certificates", []), sort_keys=True)
+
+    outbounds = data.get("outbounds", [])
+    backend = None
+    if isinstance(outbounds, list):
+        for item in outbounds:
+            if isinstance(item, dict) and item.get("tag") == expected_backend_tag:
+                backend = item
+                break
+
+    backend_settings = backend.get("settings", {}) if isinstance(backend, dict) else {}
+    if not isinstance(backend_settings, dict):
+        backend_settings = {}
+    servers = backend_settings.get("servers", [])
+    first_server = servers[0] if isinstance(servers, list) and servers and isinstance(servers[0], dict) else {}
+    actual_backend_host = str(first_server.get("address") or "")
+    actual_backend_port = int(first_server.get("port") or 0)
+
+    failures: list[str] = []
+    if not isinstance(inbound, dict):
+        failures.append("inbound missing")
+    else:
+        if inbound.get("protocol") != "trojan":
+            failures.append("protocol")
+        if expected_inbound_port and int(inbound.get("port") or 0) != expected_inbound_port:
+            failures.append("port")
+        if inbound_stream.get("network") != "ws":
+            failures.append("network")
+        if inbound_stream.get("security") != "tls":
+            failures.append("tls")
+        if expected_path and ws_settings.get("path") != expected_path:
+            failures.append("path")
+        if expected_domain and expected_domain not in cert_text:
+            failures.append("cert")
+    if not isinstance(backend, dict):
+        failures.append("backend missing")
+    else:
+        if backend.get("protocol") != "socks":
+            failures.append("backend protocol")
+        if actual_backend_host != expected_backend_host or actual_backend_port != expected_backend_port:
+            failures.append("backend target")
+
+    ok = not failures
+    detail = (
+        f"domain {expected_domain or 'unknown'}; "
+        f"ws {ws_settings.get('path') or 'missing'}; "
+        f"backend {actual_backend_host or 'missing'}:{actual_backend_port or 0}"
+    )
+    if failures:
+        detail = f"{detail}; failed {','.join(failures)}"
+    return [SelfCheck(
+        name=name,
+        ok=ok,
+        status="ok" if ok else "fail",
+        detail=detail,
+    )]
+
+
 def collect_proxy_exit_check(policy: dict[str, Any]) -> list[SelfCheck]:
     cfg = policy.get("self_proxy_exit")
     if not isinstance(cfg, dict):
@@ -1205,6 +1304,7 @@ def collect_self_checks(config: dict[str, Any], system_metrics: dict[str, Any]) 
 
     checks.extend(collect_listener_checks(policy))
     checks.extend(collect_xray_config_check(policy))
+    checks.extend(collect_trojan_ws_config_check(policy))
     checks.extend(collect_proxy_exit_check(policy))
 
     return checks
