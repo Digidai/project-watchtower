@@ -54,7 +54,7 @@ The page aggregates the newest report per mode, self-check service state, resour
 and current failures.
 The self-check service state includes the Oracle HY2 residential proxy units,
 the Trojan-WS TCP entry, local Xray listeners, direct residential Xray outbound
-shape, and SOCKS exit IP.
+shape, SOCKS exit IP, and the Trojan-WS watchdog timer.
 It is still rendered as dependency-free static HTML, with an in-page English/Chinese
 language switch that stores the selected language in browser local storage.
 The HTTP server disables directory listings and adds conservative response headers
@@ -79,6 +79,19 @@ to the dashboard's HTTP-only origin. Redeploy it after proxy changes with:
 ```bash
 wrangler deploy --config cloudflare/wrangler.oracle.jsonc
 ```
+
+## Surge Stability
+
+The Oracle proxy stack keeps two TCP paths available for the same Trojan-WS
+entry:
+
+- `v2-oracle.syncany.app:443` through Cloudflare, useful on networks where the
+  origin IP is noisy or blocked.
+- `159.54.189.18:443` with `sni=v2-oracle.syncany.app`, useful as the lower
+  latency direct path when the network allows TCP 443 to the origin.
+
+Keep the direct origin IP in Surge's `DIRECT` rules so proxy handshakes do not
+loop back through the same policy group.
 
 ## GitHub Actions Setup
 

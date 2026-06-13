@@ -1120,6 +1120,8 @@ def collect_trojan_ws_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
     expected_path = str(cfg.get("expected_path") or "")
     expected_inbound_tag = str(cfg.get("expected_inbound_tag") or "")
     expected_inbound_port = int(cfg.get("expected_inbound_port") or 0)
+    expected_heartbeat_period = int(cfg.get("expected_heartbeat_period") or 0)
+    expected_loglevel = str(cfg.get("expected_loglevel") or "")
     expected_backend_tag = str(cfg.get("expected_backend_tag") or "")
     expected_backend_host = str(cfg.get("expected_backend_host") or "")
     expected_backend_port = int(cfg.get("expected_backend_port") or 0)
@@ -1178,6 +1180,8 @@ def collect_trojan_ws_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
             failures.append("tls")
         if expected_path and ws_settings.get("path") != expected_path:
             failures.append("path")
+        if expected_heartbeat_period and int(ws_settings.get("heartbeatPeriod") or 0) != expected_heartbeat_period:
+            failures.append("heartbeat")
         if expected_domain and expected_domain not in cert_text:
             failures.append("cert")
     if not isinstance(backend, dict):
@@ -1192,8 +1196,14 @@ def collect_trojan_ws_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
     detail = (
         f"domain {expected_domain or 'unknown'}; "
         f"ws {ws_settings.get('path') or 'missing'}; "
+        f"heartbeat {ws_settings.get('heartbeatPeriod') or 0}s; "
         f"backend {actual_backend_host or 'missing'}:{actual_backend_port or 0}"
     )
+    actual_loglevel = str(data.get("log", {}).get("loglevel") or "") if isinstance(data.get("log"), dict) else ""
+    if expected_loglevel and actual_loglevel != expected_loglevel:
+        failures.append("loglevel")
+        ok = False
+        detail = f"{detail}; loglevel {actual_loglevel or 'missing'}"
     if failures:
         detail = f"{detail}; failed {','.join(failures)}"
     return [SelfCheck(
