@@ -1076,6 +1076,9 @@ def collect_xray_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
 
     exclusive_tag = str(cfg.get("exclusive_tag") or "")
     expected_server = str(cfg.get("expected_server") or "")
+    expected_servers = [str(server) for server in cfg.get("expected_servers", []) if str(server)]
+    if expected_server:
+        expected_servers.append(expected_server)
     expected_port = int(cfg.get("expected_port") or 0)
     actual_server = ""
     actual_port = 0
@@ -1089,7 +1092,9 @@ def collect_xray_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
 
     tags_ok = set(actual_tags) == set(expected_tags)
     forbidden_ok = not forbidden_present
-    server_ok = actual_server == expected_server and actual_port == expected_port
+    server_ok = actual_port == expected_port and (
+        actual_server in expected_servers if expected_servers else bool(actual_server)
+    )
     ok = tags_ok and forbidden_ok and server_ok
     details = [
         f"outbounds {','.join(actual_tags) or 'none'}",
