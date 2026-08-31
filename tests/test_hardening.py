@@ -87,6 +87,15 @@ class AuthTests(unittest.TestCase):
 
 
 class ProxyTests(unittest.TestCase):
+    def test_hy2_has_soft_backend_dependency(self):
+        import configparser
+        unit = configparser.ConfigParser()
+        unit.read(ROOT / "ops/hysteria2-surge-test.service")
+        self.assertIn("xray-vless-global.service", unit["Unit"]["Wants"])
+        self.assertNotIn("xray-vless-global.service", unit["Unit"].get("Requires", ""))
+        deploy = (ROOT / "scripts/deploy.sh").read_text()
+        self.assertIn("cloudflared-watchtower hysteria2-surge-test", deploy)
+
     def test_failed_installed_exit_rolls_back_private_config(self):
         sync = module("equaldcdn_sync")
         node = {"server": "1.1.1.1", "port": 443, "uuid": "fake", "reality-opts": {"public-key": "key"}}

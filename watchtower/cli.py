@@ -1347,7 +1347,7 @@ def collect_self_checks(config: dict[str, Any], system_metrics: dict[str, Any]) 
     dashboard_url = policy.get("self_dashboard_url")
     if dashboard_url:
         try:
-            request = urllib.request.Request(str(dashboard_url), method="HEAD")
+            request = urllib.request.Request(str(dashboard_url), method="HEAD", headers={"User-Agent": DEFAULT_USER_AGENT})
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open(request, timeout=8) as response:
                 ok = response.status == 200 and response.headers.get("X-Watchtower-App") == "dashboard-v2"

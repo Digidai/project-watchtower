@@ -1,0 +1,14 @@
+[Unit]
+Description=Hysteria 2 entry for Surge via equaldcdn
+After=network-online.target xray-vless-global.service
+Wants=network-online.target xray-vless-global.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria-surge-test/config.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

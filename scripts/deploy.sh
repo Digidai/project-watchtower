@@ -105,11 +105,10 @@ fi
 for unit in /opt/project-watchtower/systemd/project-watchtower-* /opt/project-watchtower/systemd/watchtower-proxy-status.service; do
   sudo install -m 0644 "$unit" "/etc/systemd/system/$(basename "$unit")"
 done
-for unit in equaldcdn-sync xray-trojan-ws-watchdog cloudflared-watchtower; do
+for unit in equaldcdn-sync xray-trojan-ws-watchdog cloudflared-watchtower hysteria2-surge-test; do
   sudo install -m 0644 "/opt/project-watchtower/ops/$unit.service" "/etc/systemd/system/$unit.service"
 done
-sudo install -d -m 0755 /etc/systemd/system/hysteria2-surge-test.service.d
-sudo install -m 0644 /opt/project-watchtower/ops/hysteria-backend.conf /etc/systemd/system/hysteria2-surge-test.service.d/backend.conf
+sudo rm -f /etc/systemd/system/hysteria2-surge-test.service.d/backend.conf
 sudo install -m 0755 /opt/project-watchtower/ops/sync-equaldcdn-static-node.sh /usr/local/bin/sync-equaldcdn-static-node.sh
 sudo install -m 0755 /opt/project-watchtower/ops/xray-trojan-ws-watchdog /usr/local/bin/xray-trojan-ws-watchdog
 for obsolete in \
