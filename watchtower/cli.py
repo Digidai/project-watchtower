@@ -24,6 +24,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -734,7 +735,7 @@ def write_venture_cache(state_dir: Path, startups: list[VentureDexStartup], meta
         "venturedex": meta,
         "startups": [startup_to_dict(startup) for startup in startups],
     }
-    venture_cache_path(state_dir).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(venture_cache_path(state_dir), json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def read_venture_cache(state_dir: Path) -> dict[str, Any]:
@@ -810,7 +811,7 @@ def collect_venture_cached_targets(
         selected = ordered[: min(batch_size, len(ordered))]
         cache["cursor"] = (start + len(selected)) % len(company_targets)
         cache["last_checked_at"] = utc_now()
-        venture_cache_path(state_dir).write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        atomic_write_text(venture_cache_path(state_dir), json.dumps(cache, indent=2, sort_keys=True) + "\n")
     else:
         selected = []
         errors.append("no cached company targets")
@@ -1483,6 +1484,19 @@ def cleanup_old_reports(output_dir: Path, keep: int) -> None:
             md_path.unlink()
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=".watchtower-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+
+
 def write_reports(output_dir: Path, report: dict[str, Any], keep: int = 2000) -> None:
     ensure_dir(output_dir)
     latest_json = output_dir / "latest.json"
@@ -1492,11 +1506,11 @@ def write_reports(output_dir: Path, report: dict[str, Any], keep: int = 2000) ->
     archive_md = output_dir / f"{run_id}.md"
     json_text = json.dumps(report, indent=2, sort_keys=True)
     md_text = render_markdown(report)
-    latest_json.write_text(json_text + "\n", encoding="utf-8")
-    latest_md.write_text(md_text, encoding="utf-8")
-    archive_json.write_text(json_text + "\n", encoding="utf-8")
-    archive_md.write_text(md_text, encoding="utf-8")
-    (output_dir / "index.html").write_text(render_dashboard(output_dir, report), encoding="utf-8")
+    atomic_write_text(latest_json, json_text + "\n")
+    atomic_write_text(latest_md, md_text)
+    atomic_write_text(archive_json, json_text + "\n")
+    atomic_write_text(archive_md, md_text)
+    atomic_write_text(output_dir / "index.html", render_dashboard(output_dir, report))
     cleanup_old_reports(output_dir, keep=keep)
 
 
@@ -1511,10 +1525,10 @@ def load_latest_reports_by_mode(output_dir: Path, current: dict[str, Any]) -> di
             continue
         try:
             item = json.loads(path.read_text(encoding="utf-8"))
+            mtime = path.stat().st_mtime
         except Exception:
             continue
         mode = report_mode(item)
-        mtime = path.stat().st_mtime
         if mode not in reports or mtime > reports[mode][0]:
             reports[mode] = (mtime, item)
     return {mode: item for mode, (_mtime, item) in reports.items()}

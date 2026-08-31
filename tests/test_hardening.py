@@ -23,6 +23,21 @@ def module(name):
 
 
 class AuthTests(unittest.TestCase):
+    def test_atomic_reports_preserve_open_readers_and_failed_writes(self):
+        from watchtower.cli import atomic_write_text
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "index.html"
+            atomic_write_text(path, "old complete page")
+            with path.open() as reader:
+                atomic_write_text(path, "new complete page")
+                self.assertEqual(reader.read(), "old complete page")
+            self.assertEqual(path.read_text(), "new complete page")
+            with patch("watchtower.cli.os.replace", side_effect=OSError("test disk error")):
+                with self.assertRaises(OSError):
+                    atomic_write_text(path, "not committed")
+            self.assertEqual(path.read_text(), "new complete page")
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+
     def test_fail_closed(self):
         with self.assertRaises(ValueError):
             AuthState("", "s" * 40)
