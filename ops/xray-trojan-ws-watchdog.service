@@ -1,0 +1,10 @@
+[Unit]
+Description=Consecutive-failure residential proxy watchdog
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/project-watchtower/ops/watchdog.py
+UMask=0077
+TimeoutStartSec=300
+MemoryMax=64M

@@ -155,7 +155,8 @@
       "xray-vless-global.service",
       "hysteria2-surge-test.service",
       "equaldcdn-sync.timer",
-      "xray-trojan-ws.service"
+      "xray-trojan-ws.service",
+      "cloudflared-watchtower.service"
     ],
     "self_expected_listeners": [
       {
@@ -189,8 +190,10 @@
         "port": 443
       }
     ],
+    "self_sync_health_path": "/run/project-watchtower-status/health.json",
+    "self_dashboard_url": "https://oracle.syncany.app/",
     "self_xray_config": {
-      "path": "/etc/xray-vless-global/config.json",
+      "path": "/run/project-watchtower-status/xray.json",
       "expected_outbound_tags": [
         "exclusive-static-residential",
         "direct",
@@ -210,7 +213,7 @@
       ]
     },
     "self_trojan_ws_config": {
-      "path": "/etc/xray-trojan-ws/config.json",
+      "path": "/run/project-watchtower-status/trojan.json",
       "expected_domain": "v2-oracle.syncany.app",
       "expected_path": "/_syncany_v2_ws_7QmP9x",
       "expected_inbound_tag": "trojan-ws-tls-in",

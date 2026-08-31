@@ -1,0 +1,16 @@
+[Unit]
+Description=Publish sanitized proxy status for Watchtower
+Before=project-watchtower-self.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/project-watchtower/ops/proxy_status.py
+RuntimeDirectory=project-watchtower-status
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/project-watchtower-status

@@ -63,7 +63,7 @@ jobs:
           : "${WATCHTOWER_HOST:?missing WATCHTOWER_HOST}"
           : "${WATCHTOWER_USER:?missing WATCHTOWER_USER}"
           PORT="${WATCHTOWER_PORT:-22}"
-          status=0
+          status=1
           for attempt in 1 2 3; do
             if ssh \
               -i ~/.ssh/watchtower \
@@ -77,9 +77,11 @@ jobs:
               -o ServerAliveCountMax=2 \
               "$WATCHTOWER_USER@$WATCHTOWER_HOST" \
               "${{ steps.mode.outputs.mode }}" | tee watchtower-result.json; then
-              exit 0
+              python3 -c 'import json; p=json.load(open("watchtower-result.json")); s=p.get("summary",{}).get("status"); raise SystemExit(0 if s in ("ok","warn") else 75 if p.get("status")=="busy" else 1)' && exit 0
+              status=$?
+            else
+              status=$?
             fi
-            status=$?
             if [ "$attempt" -lt 3 ]; then
               sleep $((attempt * 20))
             fi

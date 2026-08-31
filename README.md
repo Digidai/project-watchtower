@@ -7,7 +7,7 @@ It also serves a read-only dashboard from the generated report directory.
 
 The implementation is intentionally conservative:
 
-- no third-party Python dependencies
+- standard-library monitoring and dashboard; the root-only subscription adapter uses the server's existing PyYAML
 - no package manager requirement on the server
 - explicit host allowlist
 - localhost and non-public IP literal checks for dynamically discovered hosts
@@ -25,7 +25,8 @@ Local smoke run:
 python3 -m watchtower.cli run --mode core --config config/targets.json --output-dir reports --max-urls 5 --no-fail
 ```
 
-Deploy to the OCI instance without using `dnf`:
+Deploy to the provisioned OCI instance without using `dnf`. The private dashboard
+ingress and root-only subscription settings described below must exist first:
 
 ```bash
 WATCHTOWER_HOST=<server-ip> \
@@ -49,7 +50,9 @@ WATCHTOWER_DASHBOARD_PASSWORD=<dashboard-password> \
 
 ## Dashboard
 
-The dashboard service serves `/var/lib/project-watchtower/reports/index.html` on HTTP port `80`.
+The dashboard serves `/var/lib/project-watchtower/reports/index.html` only on
+`127.0.0.1:8765`, behind an authenticated Cloudflare Tunnel ingress. Public port 80
+is closed; use `https://oracle.syncany.app/`, not the instance IP, to sign in.
 The page aggregates the newest report per mode, self-check service state, resource metrics,
 and current failures.
 The self-check service state includes the Oracle HY2 residential proxy units,
@@ -60,10 +63,11 @@ language switch that stores the selected language in browser local storage.
 The HTTP server disables directory listings and adds conservative response headers
 for no-store caching, clickjacking protection, content-type sniffing protection,
 and a self-only content security policy.
-When `WATCHTOWER_DASHBOARD_PASSWORD` or `WATCHTOWER_DASHBOARD_PASSWORD_B64` is
-configured, the server shows a restricted pre-launch page until the visitor signs
-in. The deploy script stores the dashboard password in
-`/etc/project-watchtower/dashboard.env` instead of committing it to this repository.
+The server refuses to start without a password and `WATCHTOWER_ORIGIN_SECRET`.
+Unauthenticated visitors see the restricted pre-launch page. Random server-side
+sessions expire after eight hours, are revoked on logout, and use Secure/HttpOnly/
+SameSite cookies. Login attempts are bounded per client and globally. Credentials
+stay in root-only `/etc/project-watchtower/dashboard.env`, never in this repository.
 
 ## Cloudflare Domain
 
@@ -71,10 +75,14 @@ in. The deploy script stores the dashboard password in
 
 - `oracle.syncany.app/*` -> `oracle-watchtower-proxy`
 - `oracle.syncany.app` -> proxied A record for the public instance IP
-- `oracle-origin.syncany.app` -> DNS-only A record for the same origin IP
+- `oracle-origin.syncany.app` -> proxied CNAME to the named tunnel's `cfargotunnel.com` target
 
-The Worker keeps HTTPS working at the Cloudflare edge while forwarding requests
-to the dashboard's HTTP-only origin. Redeploy it after proxy changes with:
+The Worker uses HTTPS to reach the tunnel, with a shared origin secret. The tunnel
+uses authenticated encrypted outbound connections to Cloudflare, then loopback
+HTTP to the dashboard; no cleartext traffic crosses the Internet. The Worker secret
+`WATCHTOWER_ORIGIN_SECRET` must match the root-only server environment. Direct
+requests to the origin without that secret fail closed. Keep the HY2 UDP and
+Trojan TCP 443 listeners unchanged. Redeploy the Worker after proxy changes with:
 
 ```bash
 wrangler deploy --config cloudflare/wrangler.oracle.jsonc
@@ -109,9 +117,10 @@ server, `scripts/forced-command.sh` rejects every other command. If a server-sid
 timer is already running, GitHub-triggered runs return a bounded `busy` response
 instead of opening a shell or stacking parallel jobs.
 
-The scheduled GitHub workflow contacts the server every 15 minutes and runs the
-daily mode once per day. Server-side systemd timers also run independently, so
-monitoring continues even if GitHub Actions is delayed.
+The GitHub workflow requests a 15-minute schedule and daily checks. GitHub may
+delay or omit scheduled runs; the schedule is not an uptime guarantee. Independent
+systemd timers provide the primary cadence. SSH errors and critical report failures
+fail the workflow; lock contention is retried within a bounded window.
 
 Recommended key setup:
 
@@ -122,7 +131,7 @@ gh secret set WATCHTOWER_SSH_KEY < .secrets/watchtower_ed25519
 gh secret set WATCHTOWER_HOST --body "<server-ip>"
 gh secret set WATCHTOWER_USER --body "watchtower"
 gh secret set WATCHTOWER_PORT --body "22"
-ssh-keyscan -t ed25519 <server-ip> | gh secret set WATCHTOWER_KNOWN_HOSTS
+# Verify the server fingerprint through a trusted channel before storing known_hosts.
 ```
 
 ## Safety Model
@@ -136,3 +145,22 @@ URL failures are split into critical and observed failures. Curated core URLs ar
 critical; repo pages, repo homepages, README-discovered links, and VentureDex
 company homepages are observed so that one stale upstream URL does not make the
 server itself look broken.
+
+## Proxy Operations
+
+`ops/equaldcdn_sync.py` reads root-only `/etc/equaldcdn/subscription.json` (`url`
+and `expected_ip`). Every 30 minutes it refreshes the subscription, verifies the
+actual SOCKS exit, and preserves a healthy current node. Failover candidates must
+pass an isolated exit test; changes are validated with Xray, written atomically,
+and rolled back if the installed path fails. Ten private backups are retained.
+The watchdog requires consecutive failures and a 15-minute recovery cooldown.
+HY2 is kept alive during backend Xray restarts.
+
+`ops/proxy_status.py` publishes only allowlisted, credential-free fields into
+`/run/project-watchtower-status`. The unprivileged monitor reads those views,
+checks their freshness, checks credential permissions and sync age, and reports
+excessive switches. It cannot read live credentials or private backups.
+
+Regression checks: `python3 -m unittest discover -s tests -v`.
+Deployment includes bounded smoke checks and fails on missing/invalid summaries.
+External project failures remain visible; they are not silently suppressed.

@@ -29,8 +29,10 @@ args=(
   --mode "$MODE"
   --config "$APP_DIR/config/targets.json"
   --output-dir "$STATE_DIR/reports"
-  --no-fail
 )
+if [ "${WATCHTOWER_EXIT_ON_FAIL:-0}" != "1" ]; then
+  args+=(--no-fail)
+fi
 if [ -n "${WATCHTOWER_MAX_URLS:-}" ]; then
   args+=(--max-urls "$WATCHTOWER_MAX_URLS")
 fi

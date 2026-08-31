@@ -14,7 +14,6 @@ import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
-import hmac
 import html
 import ipaddress
 import json
@@ -1257,6 +1256,29 @@ def collect_proxy_exit_check(policy: dict[str, Any]) -> list[SelfCheck]:
     )]
 
 
+def collect_sync_health_checks(policy: dict[str, Any]) -> list[SelfCheck]:
+    path = policy.get("self_sync_health_path")
+    if not path:
+        return []
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        now = time.time()
+        age = now - float(data.get("generated_at") or 0)
+        success_age = now - float(data.get("last_success") or 0)
+        switches = int(data.get("switches_24h") or 0)
+    except (OSError, ValueError, TypeError):
+        return [SelfCheck(name="proxy_sync_status", ok=False, status="fail", detail="status unavailable")]
+    checks = [
+        ("proxy_status_fresh", 0 <= age <= 900, "fail", f"status age {int(age)}s"),
+        ("proxy_credentials_private", data.get("credentials_private") is True, "fail", "root-only credential files"),
+        ("proxy_sync_recent", 0 <= success_age <= 7200 and not data.get("last_error"), "warn",
+         f"last success {int(success_age)}s ago; error {data.get('last_error') or 'none'}"),
+        ("proxy_switch_frequency", switches <= 4, "warn", f"{switches} switches in 24h"),
+    ]
+    return [SelfCheck(name=name, ok=ok, status="ok" if ok else severity, detail=detail)
+            for name, ok, severity, detail in checks]
+
+
 def collect_self_checks(config: dict[str, Any], system_metrics: dict[str, Any]) -> list[SelfCheck]:
     policy = config.get("policy", {})
     checks: list[SelfCheck] = []
@@ -1321,6 +1343,20 @@ def collect_self_checks(config: dict[str, Any], system_metrics: dict[str, Any]) 
     checks.extend(collect_xray_config_check(policy))
     checks.extend(collect_trojan_ws_config_check(policy))
     checks.extend(collect_proxy_exit_check(policy))
+    checks.extend(collect_sync_health_checks(policy))
+    dashboard_url = policy.get("self_dashboard_url")
+    if dashboard_url:
+        try:
+            request = urllib.request.Request(str(dashboard_url), method="HEAD")
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=8) as response:
+                ok = response.status == 200 and response.headers.get("X-Watchtower-App") == "dashboard-v2"
+                detail = f"HTTPS status {response.status}; authenticated origin {'verified' if ok else 'unverified'}"
+        except urllib.error.HTTPError as exc:
+            ok, detail = False, f"HTTPS status {exc.code}"
+        except Exception as exc:
+            ok, detail = False, type(exc).__name__
+        checks.append(SelfCheck(name="dashboard_public_ingress", ok=ok, status="ok" if ok else "fail", detail=detail))
 
     return checks
 
@@ -2122,20 +2158,6 @@ def dashboard_password() -> str:
         return ""
 
 
-def dashboard_auth_token(password: str) -> str:
-    return hmac.new(password.encode("utf-8"), b"project-watchtower-dashboard", hashlib.sha256).hexdigest()
-
-
-def parse_cookie_value(cookie_header: str | None, name: str) -> str | None:
-    if not cookie_header:
-        return None
-    for part in cookie_header.split(";"):
-        key, sep, value = part.strip().partition("=")
-        if sep and key == name:
-            return value
-    return None
-
-
 def render_locked_dashboard(error: bool = False) -> str:
     error_html = (
         "<p class='error'>密码不正确，请确认你有授权后再重试。 / Invalid password.</p>"
@@ -2813,96 +2835,13 @@ def run(args: argparse.Namespace) -> int:
 
 
 def serve(args: argparse.Namespace) -> int:
-    import http.server
+    from .dashboard_server import AuthState, BoundedServer, make_handler
 
-    directory = str(Path(args.output_dir).resolve())
-    password = dashboard_password()
-    cookie_name = "watchtower_auth"
-    expected_token = dashboard_auth_token(password) if password else ""
-
-    class WatchtowerHTTPHandler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *handler_args: Any, **handler_kwargs: Any) -> None:
-            super().__init__(*handler_args, directory=directory, **handler_kwargs)
-
-        def is_authenticated(self) -> bool:
-            if not password:
-                return True
-            cookie_token = parse_cookie_value(self.headers.get("Cookie"), cookie_name)
-            return bool(cookie_token and hmac.compare_digest(cookie_token, expected_token))
-
-        def send_locked_page(self, status: int = 200, error: bool = False, head_only: bool = False) -> None:
-            body = render_locked_dashboard(error=error).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            if not head_only:
-                self.wfile.write(body)
-
-        def redirect_to_root(self, cookie_value: str | None = None) -> None:
-            self.send_response(303)
-            self.send_header("Location", "/")
-            if cookie_value is not None:
-                self.send_header("Set-Cookie", cookie_value)
-            self.end_headers()
-
-        def do_POST(self) -> None:
-            parsed = urllib.parse.urlparse(self.path)
-            if parsed.path != "/login":
-                self.send_error(404)
-                return
-            if not password:
-                self.redirect_to_root()
-                return
-            try:
-                length = min(int(self.headers.get("Content-Length", "0")), 4096)
-            except ValueError:
-                length = 0
-            body = self.rfile.read(length).decode("utf-8", errors="replace")
-            fields = urllib.parse.parse_qs(body, keep_blank_values=True)
-            submitted = fields.get("password", [""])[0]
-            if hmac.compare_digest(submitted, password):
-                cookie = f"{cookie_name}={expected_token}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax"
-                self.redirect_to_root(cookie)
-                return
-            self.send_locked_page(status=401, error=True)
-
-        def do_GET(self) -> None:
-            parsed = urllib.parse.urlparse(self.path)
-            if parsed.path == "/logout":
-                self.redirect_to_root(f"{cookie_name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
-                return
-            if not self.is_authenticated():
-                self.send_locked_page(status=200)
-                return
-            super().do_GET()
-
-        def do_HEAD(self) -> None:
-            if not self.is_authenticated():
-                self.send_locked_page(status=200, head_only=True)
-                return
-            super().do_HEAD()
-
-        def list_directory(self, path: str) -> None:  # type: ignore[override]
-            self.send_error(404, "directory listing disabled")
-            return None
-
-        def end_headers(self) -> None:
-            self.send_header("Cache-Control", "no-store, max-age=0")
-            self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "DENY")
-            self.send_header(
-                "Content-Security-Policy",
-                "default-src 'self'; style-src 'self' 'unsafe-inline'; "
-                "script-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                "base-uri 'none'; frame-ancestors 'none'",
-            )
-            super().end_headers()
-
-    handler = WatchtowerHTTPHandler
-    server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
-    print(f"Serving {directory} on http://{args.host}:{args.port}", flush=True)
+    auth = AuthState(dashboard_password(), os.environ.get("WATCHTOWER_ORIGIN_SECRET", ""))
+    public_origin = os.environ.get("WATCHTOWER_PUBLIC_ORIGIN", "https://oracle.syncany.app")
+    handler = make_handler(args.output_dir, auth, render_locked_dashboard, public_origin)
+    server = BoundedServer((args.host, args.port), handler)
+    print(f"Serving authenticated dashboard on {args.host}:{args.port}", flush=True)
     server.serve_forever()
     return 0
 

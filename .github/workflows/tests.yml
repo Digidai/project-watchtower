@@ -1,0 +1,21 @@
+name: Regression tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Standard-library regression tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: bash -n scripts/deploy.sh scripts/forced-command.sh scripts/watchtower-run
+      - name: Worker ingress tests
+        run: node --test tests/test_worker.mjs

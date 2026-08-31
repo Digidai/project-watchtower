@@ -1,7 +1,7 @@
 [Unit]
 Description=Project Watchtower self health check
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target watchtower-proxy-status.service
+After=network-online.target watchtower-proxy-status.service
 
 [Service]
 Type=oneshot

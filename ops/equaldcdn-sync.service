@@ -1,0 +1,18 @@
+[Unit]
+Description=Stable residential subscription synchronization
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/project-watchtower/ops/equaldcdn_sync.py
+ExecStartPost=/usr/bin/python3 /opt/project-watchtower/ops/proxy_status.py
+StateDirectory=equaldcdn
+StateDirectoryMode=0700
+RuntimeDirectory=equaldcdn
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+TimeoutStartSec=240
+MemoryMax=128M
+CPUQuota=30%
