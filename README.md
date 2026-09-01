@@ -81,7 +81,11 @@ The Worker uses HTTPS to reach the tunnel, with a shared origin secret. The tunn
 uses authenticated encrypted outbound connections to Cloudflare, then loopback
 HTTP to the dashboard; no cleartext traffic crosses the Internet. The Worker secret
 `WATCHTOWER_ORIGIN_SECRET` must match the root-only server environment. Direct
-requests to the origin without that secret fail closed. Keep the HY2 UDP and
+requests to the origin without that secret fail closed. Login POSTs are checked at
+the edge using a normalized same-origin value, with a same-origin Fetch Metadata
+fallback for privacy-focused browsers, before the canonical Origin is sent to the
+private dashboard. Cross-site and origin-less scripted login requests are rejected.
+Keep the HY2 UDP and
 Trojan TCP 443 listeners unchanged. Redeploy the Worker after proxy changes with:
 
 ```bash

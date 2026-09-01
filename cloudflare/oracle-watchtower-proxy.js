@@ -1,4 +1,5 @@
 const ORIGIN = "https://oracle-origin.syncany.app";
+const PUBLIC_ORIGIN = "https://oracle.syncany.app";
 
 function unavailable() {
   return new Response("<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Project Watchtower</title><main><h1>状态入口维护中</h1><p>此受限入口正在进行安全升级，暂不接受登录。请稍后再试。</p><p>仅供授权人员访问。请勿扫描、自动尝试密码或提交敏感信息。</p></main></html>", {
@@ -17,12 +18,51 @@ function originUrl(requestUrl) {
   return target;
 }
 
+function forbidden() {
+  return new Response("Forbidden", {
+    status: 403,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store, max-age=0",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+function normalizedOrigin(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameOriginLogin(request) {
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== "null") {
+    return normalizedOrigin(origin) === PUBLIC_ORIGIN;
+  }
+
+  // Some privacy-focused browsers suppress Origin on a same-origin form POST.
+  // Fetch Metadata must still prove that the navigation did not come cross-site.
+  const fetchSite = (request.headers.get("Sec-Fetch-Site") || "").toLowerCase();
+  if (fetchSite !== "same-origin") return false;
+  const referer = request.headers.get("Referer");
+  return !referer || normalizedOrigin(referer) === PUBLIC_ORIGIN;
+}
+
 export default {
   async fetch(request, env) {
     const incoming = new URL(request.url);
     if (incoming.protocol !== "https:") {
       incoming.protocol = "https:";
       return Response.redirect(incoming.toString(), 308);
+    }
+    if (incoming.origin !== PUBLIC_ORIGIN) {
+      return unavailable();
     }
     if (!env.WATCHTOWER_ORIGIN_SECRET) {
       return unavailable();
@@ -32,6 +72,9 @@ export default {
     }
     if (request.method === "POST" && incoming.pathname !== "/login") {
       return new Response("Not found", { status: 404 });
+    }
+    if (request.method === "POST" && !sameOriginLogin(request)) {
+      return forbidden();
     }
     const target = originUrl(request.url);
     const headers = new Headers(request.headers);
@@ -71,6 +114,10 @@ export default {
       for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
       headers.delete("Transfer-Encoding");
       headers.set("Content-Length", String(length));
+      // The edge has already performed a normalized same-origin check. Give the
+      // private origin one canonical value so browser serialization differences
+      // cannot turn a valid login into a maintenance response.
+      headers.set("Origin", PUBLIC_ORIGIN);
       init.body = body;
     }
 
