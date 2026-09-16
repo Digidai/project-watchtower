@@ -161,6 +161,7 @@ smoke() {
   return 1
 }
 
+sudo systemctl start watchtower-proxy-status.service
 smoke core WATCHTOWER_MAX_URLS=3 WATCHTOWER_MAX_BYTES=4194304
 smoke venture-discover WATCHTOWER_MAX_URLS=2 WATCHTOWER_MAX_BYTES=12582912
 
@@ -197,6 +198,5 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 require_nonfail_summary self "$self_smoke"
 smoke venture-check WATCHTOWER_MAX_URLS=5 WATCHTOWER_MAX_BYTES=12582912
-sudo systemctl start watchtower-proxy-status.service
 systemctl list-timers --all --no-pager 'project-watchtower-*'
 REMOTE

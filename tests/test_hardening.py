@@ -202,6 +202,12 @@ class ProxyTests(unittest.TestCase):
         deploy = (ROOT / "scripts/deploy.sh").read_text()
         self.assertIn("cloudflared-watchtower hysteria2-surge-test", deploy)
 
+    def test_deploy_publishes_proxy_status_before_self_smoke(self):
+        deploy = (ROOT / "scripts/deploy.sh").read_text()
+        publish = deploy.index("sudo systemctl start watchtower-proxy-status.service")
+        self_smoke = deploy.index("self_smoke=", publish)
+        self.assertLess(publish, self_smoke)
+
     def test_failed_installed_exit_rolls_back_private_config(self):
         sync = module("equaldcdn_sync")
         node = {"server": "1.1.1.1", "port": 443, "uuid": "fake", "reality-opts": {"public-key": "key"}}
