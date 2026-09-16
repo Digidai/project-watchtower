@@ -50,8 +50,10 @@ WATCHTOWER_DASHBOARD_PASSWORD=<dashboard-password> \
 
 GitHub detail probes are serialized and bounded for the unauthenticated 60-request/hour
 REST budget. `github-lite` uses at most 8 detail calls per run, daily uses 12, and both
-preserve a response-header-driven reserve. A dedicated read-only GitHub App token can
-raise those ceilings later without placing a broad personal token on the server.
+preserve a response-header-driven reserve. A primary-limit response persists its reset
+time across timer processes so no mode retries before GitHub's reset window. A dedicated
+read-only GitHub App token can raise those ceilings later without placing a broad personal
+token on the server.
 
 ## Dashboard
 

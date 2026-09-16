@@ -17,6 +17,8 @@ from watchtower.cli import (
     build_dashboard_findings,
     collect_xray_config_check,
     github_http_error_metadata,
+    load_github_rate_limit_backoff,
+    persist_github_rate_limit_backoff,
     render_dashboard,
 )
 
@@ -217,6 +219,20 @@ class DashboardFindingTests(unittest.TestCase):
         self.assertEqual(metadata["rate_limit_remaining"], "0")
         self.assertEqual(metadata["rate_limit_reset"], "1789533953")
         self.assertIn("resets at", metadata["error"])
+
+    def test_github_rate_limit_backoff_survives_processes_until_reset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "github-rate-limit.json"
+            persist_github_rate_limit_backoff(path, {
+                "rate_limit_remaining": "0",
+                "rate_limit_reset": "200",
+            })
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            metadata = load_github_rate_limit_backoff(path, authenticated=False, now=100)
+            self.assertTrue(metadata["backoff_active"])
+            self.assertEqual(metadata["rate_limit_reset"], "200")
+            self.assertIsNone(load_github_rate_limit_backoff(path, authenticated=False, now=200))
+            self.assertFalse(path.exists())
 
 
 class ProxyTests(unittest.TestCase):

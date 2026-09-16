@@ -162,17 +162,21 @@ def bounded_github_detail_limit(
     return min(configured, max(0, remaining - max(0, int(reserve))))
 
 
+def github_reset_iso(value: Any) -> str | None:
+    try:
+        return dt.datetime.fromtimestamp(int(value), UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def github_http_error_metadata(exc: urllib.error.HTTPError, authenticated: bool) -> dict[str, Any]:
     headers = exc.headers or {}
     remaining = headers.get("x-ratelimit-remaining")
     reset = headers.get("x-ratelimit-reset")
     detail = f"HTTPError: HTTP Error {exc.code}: {exc.reason}"
     if exc.code == 403 and remaining == "0":
-        try:
-            reset_at = dt.datetime.fromtimestamp(int(reset), UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-            detail = f"GitHub API rate limit exhausted; resets at {reset_at}"
-        except (TypeError, ValueError, OverflowError):
-            detail = "GitHub API rate limit exhausted"
+        reset_at = github_reset_iso(reset)
+        detail = f"GitHub API rate limit exhausted; resets at {reset_at}" if reset_at else "GitHub API rate limit exhausted"
     return {
         "pages": 0,
         "authenticated": authenticated,
@@ -180,6 +184,44 @@ def github_http_error_metadata(exc: urllib.error.HTTPError, authenticated: bool)
         "rate_limit_reset": reset,
         "error": detail[:240],
     }
+
+
+def load_github_rate_limit_backoff(
+    path: Path,
+    authenticated: bool,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        reset = int(payload["reset"])
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+        return None
+    if reset <= int(time.time() if now is None else now):
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+        return None
+    reset_at = github_reset_iso(reset)
+    return {
+        "pages": 0,
+        "authenticated": authenticated,
+        "rate_limit_remaining": "0",
+        "rate_limit_reset": str(reset),
+        "backoff_active": True,
+        "error": f"GitHub API rate limit backoff active until {reset_at}",
+    }
+
+
+def persist_github_rate_limit_backoff(path: Path, metadata: dict[str, Any]) -> None:
+    if metadata.get("rate_limit_remaining") != "0":
+        return
+    try:
+        reset = int(metadata.get("rate_limit_reset"))
+    except (TypeError, ValueError):
+        return
+    ensure_dir(path.parent)
+    atomic_write_text(path, json.dumps({"reset": reset}, sort_keys=True) + "\n")
 
 
 def utc_now() -> str:
@@ -3040,21 +3082,27 @@ def run(args: argparse.Namespace) -> int:
         github_meta = {"skipped": True, "reason": "venture-check mode"}
         targets, rejected_urls, venture_startups, venture_meta = collect_venture_cached_targets(config, timeout, state_dir)
     else:
-        try:
-            repos, github_meta = fetch_repositories(owner, timeout=timeout, max_pages=int(policy.get("github_max_pages", 5)))
-        except urllib.error.HTTPError as exc:
+        authenticated = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("WATCHTOWER_GITHUB_TOKEN"))
+        github_backoff_path = state_dir / "github-rate-limit.json"
+        github_meta = load_github_rate_limit_backoff(github_backoff_path, authenticated)
+        if github_meta is not None:
             repos = []
-            github_meta = github_http_error_metadata(
-                exc,
-                bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("WATCHTOWER_GITHUB_TOKEN")),
-            )
-        except Exception as exc:
-            repos = []
-            github_meta = {
-                "pages": 0,
-                "authenticated": bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("WATCHTOWER_GITHUB_TOKEN")),
-                "error": type(exc).__name__ + ": " + str(exc)[:180],
-            }
+        else:
+            try:
+                repos, github_meta = fetch_repositories(owner, timeout=timeout, max_pages=int(policy.get("github_max_pages", 5)))
+                with contextlib.suppress(FileNotFoundError):
+                    github_backoff_path.unlink()
+            except urllib.error.HTTPError as exc:
+                repos = []
+                github_meta = github_http_error_metadata(exc, authenticated)
+                persist_github_rate_limit_backoff(github_backoff_path, github_meta)
+            except Exception as exc:
+                repos = []
+                github_meta = {
+                    "pages": 0,
+                    "authenticated": authenticated,
+                    "error": type(exc).__name__ + ": " + str(exc)[:180],
+                }
 
         repo_checks, discovered_targets, github_detail_meta = collect_github_repo_checks(
             owner,

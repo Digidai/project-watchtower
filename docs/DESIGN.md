@@ -16,7 +16,9 @@ minutes, and `venture-discover` hourly.
 
 GitHub API detail calls run serially. Anonymous runs use fixed per-mode ceilings plus
 an `x-ratelimit-remaining` reserve so the 15-minute schedule stays below GitHub's
-60-request/hour primary limit; an authenticated token retains the configured ceiling.
+60-request/hour primary limit. Primary-limit reset state is persisted outside the report
+directory so independent timer modes do not retry before `x-ratelimit-reset`; an
+authenticated token retains the configured ceiling.
 
 ## Non-Goals
 
