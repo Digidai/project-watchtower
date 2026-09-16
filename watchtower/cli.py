@@ -146,6 +146,42 @@ class ApiBudget:
             return True
 
 
+def bounded_github_detail_limit(
+    configured_limit: int,
+    authenticated: bool,
+    rate_limit_remaining: Any,
+    reserve: int,
+) -> int:
+    configured = max(0, int(configured_limit))
+    if authenticated:
+        return configured
+    try:
+        remaining = max(0, int(rate_limit_remaining))
+    except (TypeError, ValueError):
+        return configured
+    return min(configured, max(0, remaining - max(0, int(reserve))))
+
+
+def github_http_error_metadata(exc: urllib.error.HTTPError, authenticated: bool) -> dict[str, Any]:
+    headers = exc.headers or {}
+    remaining = headers.get("x-ratelimit-remaining")
+    reset = headers.get("x-ratelimit-reset")
+    detail = f"HTTPError: HTTP Error {exc.code}: {exc.reason}"
+    if exc.code == 403 and remaining == "0":
+        try:
+            reset_at = dt.datetime.fromtimestamp(int(reset), UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            detail = f"GitHub API rate limit exhausted; resets at {reset_at}"
+        except (TypeError, ValueError, OverflowError):
+            detail = "GitHub API rate limit exhausted"
+    return {
+        "pages": 0,
+        "authenticated": authenticated,
+        "rate_limit_remaining": remaining,
+        "rate_limit_reset": reset,
+        "error": detail[:240],
+    }
+
+
 def utc_now() -> str:
     return dt.datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -436,6 +472,7 @@ def collect_github_repo_checks(
     mode: str,
     timeout: float,
     policy: dict[str, Any],
+    rate_limit_remaining: Any = None,
 ) -> tuple[list[GitHubRepoCheck], list[UrlTarget], dict[str, Any]]:
     if mode in {"core", "self", "venture-check", "venture-discover"}:
         return [], [], {"api_detail_requests_used": 0, "detail_repo_count": 0}
@@ -445,7 +482,15 @@ def collect_github_repo_checks(
     max_repos = int(detail_limits.get(mode, detail_limits.get("daily", 20)))
     api_request_limits = policy.get("github_detail_api_requests", {})
     default_api_limit = 80 if token else 45
-    api_budget = ApiBudget(int(api_request_limits.get(mode, default_api_limit)))
+    configured_api_limit = int(api_request_limits.get(mode, default_api_limit))
+    rate_limit_reserve = int(policy.get("github_rate_limit_reserve", 8))
+    effective_api_limit = bounded_github_detail_limit(
+        configured_api_limit,
+        bool(token),
+        rate_limit_remaining,
+        rate_limit_reserve,
+    )
+    api_budget = ApiBudget(effective_api_limit)
     max_links = int(policy.get("readme_link_max_per_repo", 5))
     candidates = [
         repo for repo in sorted_recent_repos(repos)
@@ -471,6 +516,8 @@ def collect_github_repo_checks(
     meta = {
         "api_detail_requests_used": api_budget.used,
         "api_detail_request_limit": api_budget.limit,
+        "api_detail_configured_limit": configured_api_limit,
+        "api_rate_limit_reserve": rate_limit_reserve if not token else 0,
         "detail_repo_count": len(candidates),
         "readme_link_max_per_repo": max_links,
     }
@@ -2995,6 +3042,12 @@ def run(args: argparse.Namespace) -> int:
     else:
         try:
             repos, github_meta = fetch_repositories(owner, timeout=timeout, max_pages=int(policy.get("github_max_pages", 5)))
+        except urllib.error.HTTPError as exc:
+            repos = []
+            github_meta = github_http_error_metadata(
+                exc,
+                bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("WATCHTOWER_GITHUB_TOKEN")),
+            )
         except Exception as exc:
             repos = []
             github_meta = {
@@ -3003,7 +3056,14 @@ def run(args: argparse.Namespace) -> int:
                 "error": type(exc).__name__ + ": " + str(exc)[:180],
             }
 
-        repo_checks, discovered_targets, github_detail_meta = collect_github_repo_checks(owner, repos, args.mode, timeout, policy)
+        repo_checks, discovered_targets, github_detail_meta = collect_github_repo_checks(
+            owner,
+            repos,
+            args.mode,
+            timeout,
+            policy,
+            github_meta.get("rate_limit_remaining"),
+        )
         github_meta.update(github_detail_meta)
         targets, rejected_urls = build_targets(config, repos, args.mode, discovered_targets)
     mode_max_urls = policy.get("mode_max_urls", {})

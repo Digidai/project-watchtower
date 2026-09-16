@@ -8,10 +8,17 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from watchtower.dashboard_server import AuthState, BoundedServer, COOKIE, make_handler
-from watchtower.cli import build_dashboard_findings, collect_xray_config_check, render_dashboard
+from watchtower.cli import (
+    bounded_github_detail_limit,
+    build_dashboard_findings,
+    collect_xray_config_check,
+    github_http_error_metadata,
+    render_dashboard,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -190,6 +197,26 @@ class DashboardFindingTests(unittest.TestCase):
         self.assertIn("No actionable problems", rendered)
         self.assertIn("paper.design", rendered)
         self.assertIn("TLS certificate has 25 days remaining", rendered)
+
+    def test_unauthenticated_github_budget_preserves_rate_limit_reserve(self):
+        self.assertEqual(bounded_github_detail_limit(8, False, "60", 8), 8)
+        self.assertEqual(bounded_github_detail_limit(8, False, "11", 8), 3)
+        self.assertEqual(bounded_github_detail_limit(8, False, "0", 8), 0)
+        self.assertEqual(bounded_github_detail_limit(16, True, "0", 8), 16)
+
+    def test_github_rate_limit_error_keeps_reset_metadata(self):
+        exc = urllib.error.HTTPError(
+            "https://api.github.com/users/Digidai/repos",
+            403,
+            "rate limit exceeded",
+            {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789533953"},
+            None,
+        )
+        self.addCleanup(exc.close)
+        metadata = github_http_error_metadata(exc, authenticated=False)
+        self.assertEqual(metadata["rate_limit_remaining"], "0")
+        self.assertEqual(metadata["rate_limit_reset"], "1789533953")
+        self.assertIn("resets at", metadata["error"])
 
 
 class ProxyTests(unittest.TestCase):

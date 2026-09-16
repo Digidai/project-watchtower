@@ -118,16 +118,17 @@
       "venture-check": 25,
       "venture-discover": 2
     },
-    "github_detail_concurrency": 4,
+    "github_detail_concurrency": 1,
+    "github_rate_limit_reserve": 8,
     "github_detail_repos": {
-      "github-lite": 8,
-      "daily": 12,
-      "weekly": 28
+      "github-lite": 4,
+      "daily": 6,
+      "weekly": 8
     },
     "github_detail_api_requests": {
-      "github-lite": 16,
-      "daily": 45,
-      "weekly": 80
+      "github-lite": 8,
+      "daily": 12,
+      "weekly": 16
     },
     "mode_max_megabytes": {
       "core": 8,

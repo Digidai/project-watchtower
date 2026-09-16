@@ -48,6 +48,11 @@ WATCHTOWER_DASHBOARD_PASSWORD=<dashboard-password> \
 - `venture-discover`: refreshes the VentureDex profile/company cache hourly.
 - `venture-check`: checks a rotating cached batch of VentureDex company homepages every 10 minutes.
 
+GitHub detail probes are serialized and bounded for the unauthenticated 60-request/hour
+REST budget. `github-lite` uses at most 8 detail calls per run, daily uses 12, and both
+preserve a response-header-driven reserve. A dedicated read-only GitHub App token can
+raise those ceilings later without placing a broad personal token on the server.
+
 ## Dashboard
 
 The dashboard serves `/var/lib/project-watchtower/reports/index.html` only on

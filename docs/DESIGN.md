@@ -14,6 +14,10 @@ The phase-one scheduler splits high-frequency work into small modes: `core` and
 `self` every 5 minutes, `github-lite` every 15 minutes, `venture-check` every 10
 minutes, and `venture-discover` hourly.
 
+GitHub API detail calls run serially. Anonymous runs use fixed per-mode ceilings plus
+an `x-ratelimit-remaining` reserve so the 15-minute schedule stays below GitHub's
+60-request/hour primary limit; an authenticated token retains the configured ceiling.
+
 ## Non-Goals
 
 - No fake traffic generation.
