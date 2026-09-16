@@ -162,6 +162,15 @@ def bounded_github_detail_limit(
     return min(configured, max(0, remaining - max(0, int(reserve))))
 
 
+def github_remaining_after_detail(rate_limit_remaining: Any, detail_requests_used: Any) -> str | None:
+    if rate_limit_remaining is None:
+        return None
+    try:
+        return str(max(0, int(rate_limit_remaining) - max(0, int(detail_requests_used))))
+    except (TypeError, ValueError):
+        return str(rate_limit_remaining)
+
+
 def github_reset_iso(value: Any) -> str | None:
     try:
         return dt.datetime.fromtimestamp(int(value), UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -3113,6 +3122,12 @@ def run(args: argparse.Namespace) -> int:
             github_meta.get("rate_limit_remaining"),
         )
         github_meta.update(github_detail_meta)
+        if github_meta.get("rate_limit_remaining") is not None:
+            github_meta["rate_limit_remaining_before_detail"] = github_meta["rate_limit_remaining"]
+            github_meta["rate_limit_remaining"] = github_remaining_after_detail(
+                github_meta["rate_limit_remaining"],
+                github_detail_meta.get("api_detail_requests_used"),
+            )
         targets, rejected_urls = build_targets(config, repos, args.mode, discovered_targets)
     mode_max_urls = policy.get("mode_max_urls", {})
     configured_max_urls = mode_max_urls.get(args.mode)

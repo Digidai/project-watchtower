@@ -17,6 +17,7 @@ from watchtower.cli import (
     build_dashboard_findings,
     collect_xray_config_check,
     github_http_error_metadata,
+    github_remaining_after_detail,
     load_github_rate_limit_backoff,
     persist_github_rate_limit_backoff,
     render_dashboard,
@@ -205,6 +206,8 @@ class DashboardFindingTests(unittest.TestCase):
         self.assertEqual(bounded_github_detail_limit(8, False, "11", 8), 3)
         self.assertEqual(bounded_github_detail_limit(8, False, "0", 8), 0)
         self.assertEqual(bounded_github_detail_limit(16, True, "0", 8), 16)
+        self.assertEqual(github_remaining_after_detail("58", 8), "50")
+        self.assertIsNone(github_remaining_after_detail(None, 8))
 
     def test_github_rate_limit_error_keeps_reset_metadata(self):
         exc = urllib.error.HTTPError(
