@@ -103,6 +103,8 @@
   "policy": {
     "timeout_seconds": 6,
     "max_concurrency": 6,
+    "url_transient_retries": 1,
+    "url_retry_delay_seconds": 0.25,
     "slow_url_ms": 8000,
     "github_max_pages": 5,
     "per_request_max_bytes": 2097152,

@@ -3,6 +3,7 @@ import http.client
 import importlib.util
 import json
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 import threading
@@ -13,13 +14,19 @@ from unittest.mock import patch
 
 from watchtower.dashboard_server import AuthState, BoundedServer, COOKIE, make_handler
 from watchtower.cli import (
+    ApiBudget,
+    ByteBudget,
+    UrlTarget,
     bounded_github_detail_limit,
     build_dashboard_findings,
     collect_xray_config_check,
+    fetch_url,
     github_http_error_metadata,
     github_remaining_after_detail,
+    is_transient_network_error,
     load_github_rate_limit_backoff,
     persist_github_rate_limit_backoff,
+    request_json,
     render_dashboard,
 )
 
@@ -236,6 +243,57 @@ class DashboardFindingTests(unittest.TestCase):
             self.assertEqual(metadata["rate_limit_reset"], "200")
             self.assertIsNone(load_github_rate_limit_backoff(path, authenticated=False, now=200))
             self.assertFalse(path.exists())
+
+    def test_transient_dns_failure_retries_url_and_github_json_once(self):
+        class Response:
+            status = 200
+            headers = {"X-RateLimit-Remaining": "59"}
+
+            def __init__(self, body: bytes):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return "https://example.com/"
+
+            def read(self, _size=-1):
+                body, self.body = self.body, b""
+                return body
+
+        dns_error = urllib.error.URLError(socket.gaierror(socket.EAI_NONAME, "temporary resolver miss"))
+        self.assertTrue(is_transient_network_error(dns_error))
+        with patch("watchtower.cli.SAFE_OPENER.open", side_effect=[dns_error, Response(b"ok")]):
+            result = fetch_url(
+                UrlTarget("https://example.com/", "github_repo", None, False),
+                timeout=1,
+                budget=ByteBudget(1024),
+                per_request_limit=1024,
+                transient_retries=1,
+                retry_delay_seconds=0,
+            )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.attempts, 2)
+
+        with (
+            patch("watchtower.cli.urllib.request.urlopen", side_effect=[dns_error, Response(b'{"ok": true}')]) as opener,
+            patch("watchtower.cli.time.sleep"),
+        ):
+            retry_budget = ApiBudget(1)
+            payload, headers = request_json(
+                "https://api.github.com/example",
+                None,
+                timeout=1,
+                retry_budget=retry_budget,
+            )
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(headers["x-ratelimit-remaining"], "59")
+        self.assertEqual(opener.call_count, 2)
+        self.assertEqual(retry_budget.used, 1)
 
 
 class ProxyTests(unittest.TestCase):

@@ -55,6 +55,9 @@ time across timer processes so no mode retries before GitHub's reset window. A d
 read-only GitHub App token can raise those ceilings later without placing a broad personal
 token on the server.
 
+URL checks retry DNS, timeout, or connection-reset failures once after a short bounded
+delay. HTTP status failures and TLS validation errors remain immediate observations.
+
 ## Dashboard
 
 The dashboard serves `/var/lib/project-watchtower/reports/index.html` only on

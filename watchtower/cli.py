@@ -61,6 +61,7 @@ class UrlResult:
     final_url: str | None = None
     error: str | None = None
     tls_days_remaining: int | None = None
+    attempts: int = 1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -285,6 +286,16 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 SAFE_OPENER = urllib.request.build_opener(SafeRedirectHandler)
 
 
+def is_transient_network_error(exc: BaseException) -> bool:
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, (socket.gaierror, socket.timeout, TimeoutError, ConnectionError))
+
+
+def retry_delay(attempt: int, base_seconds: float) -> None:
+    if base_seconds > 0:
+        time.sleep(min(2.0, base_seconds * max(1, attempt)))
+
+
 def host_matches(hostname: str, allowed: Iterable[str]) -> bool:
     host = hostname.lower().rstrip(".")
     for pattern in allowed:
@@ -342,7 +353,13 @@ def filter_allowed_targets(targets: Iterable[UrlTarget], config: dict[str, Any])
     return accepted, rejected
 
 
-def request_json(url: str, token: str | None, timeout: float, max_bytes: int = 20 * 1024 * 1024) -> tuple[Any, dict[str, str]]:
+def request_json(
+    url: str,
+    token: str | None,
+    timeout: float,
+    max_bytes: int = 20 * 1024 * 1024,
+    retry_budget: ApiBudget | None = None,
+) -> tuple[Any, dict[str, str]]:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": DEFAULT_USER_AGENT,
@@ -351,10 +368,20 @@ def request_json(url: str, token: str | None, timeout: float, max_bytes: int = 2
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = resp.read(max_bytes)
-        headers_out = {k.lower(): v for k, v in resp.headers.items()}
-        return json.loads(body.decode("utf-8")), headers_out
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read(max_bytes)
+                headers_out = {k.lower(): v for k, v in resp.headers.items()}
+                return json.loads(body.decode("utf-8")), headers_out
+        except Exception as exc:
+            if attempt == 0 and is_transient_network_error(exc):
+                if retry_budget is not None and not retry_budget.spend():
+                    raise RuntimeError("GitHub API retry budget exhausted") from exc
+                retry_delay(attempt + 1, 0.25)
+                continue
+            raise
+    raise RuntimeError("unreachable request retry state")
 
 
 def next_link(link_header: str | None) -> str | None:
@@ -453,7 +480,13 @@ def fetch_repo_readme_links(
         return [], GitHubRepoCheck(repo=repo.name, kind="readme", ok=False, status="skipped", detail="api budget exhausted")
     url = f"https://api.github.com/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo.name)}/readme"
     try:
-        payload, _headers = request_json(url, token, timeout, max_bytes=3 * 1024 * 1024)
+        payload, _headers = request_json(
+            url,
+            token,
+            timeout,
+            max_bytes=3 * 1024 * 1024,
+            retry_budget=api_budget,
+        )
         if not isinstance(payload, dict):
             raise RuntimeError("unexpected readme payload")
         text = decode_readme_content(payload)
@@ -490,7 +523,13 @@ def fetch_repo_workflow_check(
         return GitHubRepoCheck(repo=repo.name, kind="workflow", ok=False, status="skipped", detail="api budget exhausted")
     url = f"https://api.github.com/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo.name)}/actions/runs?per_page=1"
     try:
-        payload, _headers = request_json(url, token, timeout, max_bytes=512 * 1024)
+        payload, _headers = request_json(
+            url,
+            token,
+            timeout,
+            max_bytes=512 * 1024,
+            retry_budget=api_budget,
+        )
         if not isinstance(payload, dict):
             raise RuntimeError("unexpected workflow payload")
         runs = payload.get("workflow_runs") or []
@@ -971,7 +1010,14 @@ def tls_days_remaining(url: str, timeout: float) -> int | None:
         return None
 
 
-def fetch_url(target: UrlTarget, timeout: float, budget: ByteBudget, per_request_limit: int) -> UrlResult:
+def fetch_url(
+    target: UrlTarget,
+    timeout: float,
+    budget: ByteBudget,
+    per_request_limit: int,
+    transient_retries: int = 1,
+    retry_delay_seconds: float = 0.25,
+) -> UrlResult:
     url = target.url
     started = time.monotonic()
     headers = {
@@ -982,12 +1028,19 @@ def fetch_url(target: UrlTarget, timeout: float, budget: ByteBudget, per_request
     final_url: str | None = None
     bytes_read = 0
     error: str | None = None
+    attempts = 0
 
     # GET is deliberate: a HEAD-only check can pass while the real page body is
     # broken. The body read is still capped by the per-request and per-run budget.
-    if budget.remaining <= 0:
-        error = "byte budget exhausted"
-    else:
+    for attempt in range(max(0, transient_retries) + 1):
+        attempts = attempt + 1
+        status = None
+        final_url = None
+        bytes_read = 0
+        error = None
+        if budget.remaining <= 0:
+            error = "byte budget exhausted"
+            break
         try:
             parsed = urllib.parse.urlparse(url)
             if not is_public_hostname(parsed.hostname):
@@ -997,6 +1050,7 @@ def fetch_url(target: UrlTarget, timeout: float, budget: ByteBudget, per_request
                 status = int(resp.status)
                 final_url = resp.geturl()
                 bytes_read = read_limited(resp, budget, per_request_limit)
+            break
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
             final_url = exc.geturl()
@@ -1007,8 +1061,13 @@ def fetch_url(target: UrlTarget, timeout: float, budget: ByteBudget, per_request
                 bytes_read = read_limited(exc, budget, per_request_limit)
             else:
                 error = f"http {exc.code}"
+            break
         except Exception as exc:
+            if attempt < transient_retries and is_transient_network_error(exc):
+                retry_delay(attempt + 1, retry_delay_seconds)
+                continue
             error = type(exc).__name__ + ": " + str(exc)[:180]
+            break
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     ok = status is not None and 200 <= status < 400 and error is None
@@ -1025,6 +1084,7 @@ def fetch_url(target: UrlTarget, timeout: float, budget: ByteBudget, per_request
         final_url=final_url,
         error=error,
         tls_days_remaining=tls_days_remaining(url, min(timeout, 4.0)) if target.source in cert_sources else None,
+        attempts=attempts,
     )
 
 
@@ -3050,6 +3110,8 @@ def run(args: argparse.Namespace) -> int:
     policy = config.get("policy", {})
     timeout = float(policy.get("timeout_seconds", 10))
     workers = int(policy.get("max_concurrency", 3))
+    transient_retries = max(0, min(2, int(policy.get("url_transient_retries", 1))))
+    retry_delay_seconds = max(0.0, min(2.0, float(policy.get("url_retry_delay_seconds", 0.25))))
     per_request_limit = int(policy.get("per_request_max_bytes", 2 * 1024 * 1024))
     mode_budget_mb = policy.get("mode_max_megabytes", {})
     max_bytes = int(float(mode_budget_mb.get(args.mode, mode_budget_mb.get("daily", 32))) * 1024 * 1024)
@@ -3141,7 +3203,15 @@ def run(args: argparse.Namespace) -> int:
     if targets:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             future_map = {
-                pool.submit(fetch_url, target, timeout, budget, per_request_limit): target
+                pool.submit(
+                    fetch_url,
+                    target,
+                    timeout,
+                    budget,
+                    per_request_limit,
+                    transient_retries,
+                    retry_delay_seconds,
+                ): target
                 for target in targets
             }
             for future in concurrent.futures.as_completed(future_map):
@@ -3182,6 +3252,8 @@ def run(args: argparse.Namespace) -> int:
             "bytes_read": budget.used,
             "per_request_max_bytes": per_request_limit,
             "max_concurrency": workers,
+            "transient_retries": transient_retries,
+            "retry_delay_seconds": retry_delay_seconds,
         },
         "system": system_metrics,
     }

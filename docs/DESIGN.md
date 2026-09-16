@@ -20,6 +20,10 @@ an `x-ratelimit-remaining` reserve so the 15-minute schedule stays below GitHub'
 directory so independent timer modes do not retry before `x-ratelimit-reset`; an
 authenticated token retains the configured ceiling.
 
+URL and GitHub JSON requests retry a transient resolver, timeout, or connection-reset
+failure once. The retry is bounded, consumes the same byte budget, and never retries HTTP
+status or certificate-validation failures.
+
 ## Non-Goals
 
 - No fake traffic generation.
