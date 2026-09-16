@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from watchtower.dashboard_server import AuthState, BoundedServer, COOKIE, make_handler
-from watchtower.cli import build_dashboard_findings, render_dashboard
+from watchtower.cli import build_dashboard_findings, collect_xray_config_check, render_dashboard
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -238,6 +238,32 @@ class ProxyTests(unittest.TestCase):
             with patch("watchtower.cli.time.time", return_value=10000):
                 checks = collect_sync_health_checks({"self_sync_health_path": str(path)})
                 self.assertTrue(any(c.status == "fail" for c in checks))
+
+    def test_xray_config_matches_verified_sync_server(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "xray.json"
+            status_path = root / "health.json"
+            config_path.write_text(json.dumps({"outbounds": [
+                {"tag": "exclusive-static-residential", "settings": {"vnext": [
+                    {"address": "23.148.204.153", "port": 42892}
+                ]}},
+                {"tag": "direct"},
+                {"tag": "block"},
+            ]}))
+            status_path.write_text(json.dumps({"server": "23.148.204.153"}))
+            policy = {"self_xray_config": {
+                "path": str(config_path),
+                "expected_outbound_tags": ["exclusive-static-residential", "direct", "block"],
+                "exclusive_tag": "exclusive-static-residential",
+                "expected_server_status_path": str(status_path),
+                "expected_port": 42892,
+                "forbidden_terms": ["relay-out", "dialerProxy"],
+            }}
+
+            self.assertTrue(collect_xray_config_check(policy)[0].ok)
+            status_path.write_text(json.dumps({"server": "23.148.204.143"}))
+            self.assertFalse(collect_xray_config_check(policy)[0].ok)
 
     def test_atomic_credentials_are_private(self):
         sync = module("equaldcdn_sync")

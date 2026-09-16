@@ -51,6 +51,7 @@ def main():
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     publish("health.json", {"generated_at": time.time(), "last_success": state.get("last_success"),
         "last_error": state.get("last_error"), "reason": state.get("reason"),
+        "server": state.get("server"),
         "switches_24h": sum(t > time.time() - 86400 for t in state.get("switches", [])),
         "credentials_private": not (Path("/etc/xray-vless-global/config.json").stat().st_mode & 0o077)})
 

@@ -100,6 +100,11 @@ observations. Only the first two categories affect the aggregate health badge;
 external failures and certificate warnings remain visible with their contributing
 modes and collapsed execution count.
 
+Proxy self-checks compare the sanitized Xray upstream with the latest verified
+EqualDCDN sync state instead of a copied static server list. The sync-state freshness,
+credential permissions, direct outbound shape, and residential exit IP remain
+independent checks, so an unavailable or stale state still fails closed.
+
 ## Reclamation Reality
 
 Oracle documents that idle Always Free instances may be reclaimed when CPU,

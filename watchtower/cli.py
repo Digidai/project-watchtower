@@ -1079,6 +1079,15 @@ def collect_xray_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
     expected_servers = [str(server) for server in cfg.get("expected_servers", []) if str(server)]
     if expected_server:
         expected_servers.append(expected_server)
+    expected_server_status_path = str(cfg.get("expected_server_status_path") or "")
+    verified_server = ""
+    verified_server_error = ""
+    if expected_server_status_path:
+        try:
+            status_data = json.loads(Path(expected_server_status_path).read_text(encoding="utf-8"))
+            verified_server = str(status_data.get("server") or "")
+        except Exception as exc:
+            verified_server_error = type(exc).__name__
     expected_port = int(cfg.get("expected_port") or 0)
     actual_server = ""
     actual_port = 0
@@ -1092,9 +1101,11 @@ def collect_xray_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
 
     tags_ok = set(actual_tags) == set(expected_tags)
     forbidden_ok = not forbidden_present
-    server_ok = actual_port == expected_port and (
-        actual_server in expected_servers if expected_servers else bool(actual_server)
-    )
+    if expected_server_status_path:
+        expected_server_ok = bool(verified_server) and actual_server == verified_server
+    else:
+        expected_server_ok = actual_server in expected_servers if expected_servers else bool(actual_server)
+    server_ok = actual_port == expected_port and expected_server_ok
     ok = tags_ok and forbidden_ok and server_ok
     details = [
         f"outbounds {','.join(actual_tags) or 'none'}",
@@ -1102,6 +1113,12 @@ def collect_xray_config_check(policy: dict[str, Any]) -> list[SelfCheck]:
     ]
     if forbidden_present:
         details.append(f"forbidden {','.join(forbidden_present)}")
+    if expected_server_status_path:
+        details.append(
+            f"verified sync server {verified_server}"
+            if verified_server
+            else f"verified sync server unavailable ({verified_server_error or 'missing'})"
+        )
     return [SelfCheck(
         name=name,
         ok=ok,

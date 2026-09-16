@@ -62,6 +62,10 @@ Mode rows retain their raw status, including warnings caused only by external ob
 The self-check service state includes the Oracle HY2 residential proxy units,
 the Trojan-WS TCP entry, local Xray listeners, direct residential Xray outbound
 shape, SOCKS exit IP, and the Trojan-WS watchdog timer.
+The residential upstream is matched against the latest root-published sync state,
+which is created only after subscription parsing and exit verification. This avoids
+duplicating rotating provider IPs in dashboard configuration while still failing
+closed when runtime Xray and verified sync state disagree.
 It is still rendered as dependency-free static HTML, with an in-page English/Chinese
 language switch that stores the selected language in browser local storage.
 The HTTP server disables directory listings and adds conservative response headers

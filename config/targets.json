@@ -200,12 +200,7 @@
         "block"
       ],
       "exclusive_tag": "exclusive-static-residential",
-      "expected_servers": [
-        "23.148.204.135",
-        "23.148.204.143",
-        "38.58.57.132",
-        "38.58.57.148"
-      ],
+      "expected_server_status_path": "/run/project-watchtower-status/health.json",
       "expected_port": 42892,
       "forbidden_terms": [
         "relay-out",
