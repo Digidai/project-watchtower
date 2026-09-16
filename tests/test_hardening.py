@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from watchtower.dashboard_server import AuthState, BoundedServer, COOKIE, make_handler
+from watchtower.cli import build_dashboard_findings, render_dashboard
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,6 +100,96 @@ class AuthTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 worker.join(timeout=3)
+
+
+class DashboardFindingTests(unittest.TestCase):
+    @staticmethod
+    def report(mode, *, repositories=None, urls=None, github_checks=None, self_checks=None):
+        return {
+            "run": {"mode": mode, "completed_at": "2026-09-01T00:00:00Z"},
+            "summary": {
+                "status": "warn",
+                "url_count": len(urls or []),
+                "slow_url_ms": 8000,
+                "repo_check_count": len(github_checks or []),
+                "self_check_count": len(self_checks or []),
+            },
+            "repositories": repositories or [],
+            "urls": urls or [],
+            "github_repo_checks": github_checks or [],
+            "self_checks": self_checks or [],
+            "github": {},
+            "resource_budget": {"bytes_read": 0},
+            "system": {},
+        }
+
+    def test_deduplicates_url_and_workflow_across_modes(self):
+        repo = {"name": "raltic", "fork": False, "archived": False}
+        failed_url = {
+            "url": "https://old.example.workers.dev",
+            "source": "repo_homepage",
+            "repo": "raltic",
+            "critical": False,
+            "ok": False,
+            "status": 404,
+            "error": "http 404",
+        }
+        check_one = {
+            "repo": "venturedex-co",
+            "kind": "workflow",
+            "ok": False,
+            "status": "failure",
+            "detail": "Sync VentureDex launches",
+            "url": "https://github.com/Digidai/venturedex-co/actions/runs/1",
+        }
+        check_two = dict(check_one, url="https://github.com/Digidai/venturedex-co/actions/runs/2")
+        reports = {
+            "github-lite": self.report("github-lite", repositories=[repo], urls=[failed_url], github_checks=[check_one]),
+            "daily": self.report("daily", repositories=[repo], urls=[failed_url], github_checks=[check_two]),
+        }
+
+        findings = build_dashboard_findings(reports, ["github-lite", "daily"])
+
+        self.assertEqual(len(findings), 2)
+        self.assertTrue(all(item["category"] == "action" for item in findings))
+        self.assertTrue(all(item["occurrences"] == 2 for item in findings))
+        self.assertTrue(all(item["modes"] == ["github-lite", "daily"] for item in findings))
+
+    def test_owned_homepage_is_action_and_fork_is_observation(self):
+        repositories = [
+            {"name": "raltic", "fork": False, "archived": False},
+            {"name": "ChatChat", "fork": True, "archived": False},
+        ]
+        urls = [
+            {"url": "https://raltic.invalid/", "source": "repo_homepage", "repo": "raltic", "ok": False},
+            {"url": "https://chat.invalid/", "source": "repo_homepage", "repo": "ChatChat", "ok": False},
+        ]
+        findings = build_dashboard_findings(
+            {"daily": self.report("daily", repositories=repositories, urls=urls)},
+            ["daily"],
+        )
+        categories = {item["title"].split()[0]: item["category"] for item in findings}
+        self.assertEqual(categories, {"raltic": "action", "ChatChat": "observation"})
+
+    def test_external_certificate_warning_is_visible_without_core_alarm(self):
+        url = {
+            "url": "https://paper.design/",
+            "source": "venturedex_company",
+            "repo": "Paper",
+            "critical": False,
+            "ok": True,
+            "status": 200,
+            "elapsed_ms": 320,
+            "tls_days_remaining": 25,
+        }
+        report = self.report("venture-check", urls=[url])
+        report["summary"]["cert_warning_count"] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            rendered = render_dashboard(Path(directory), report)
+        self.assertIn("Core healthy", rendered)
+        self.assertIn("No actionable problems", rendered)
+        self.assertIn("paper.design", rendered)
+        self.assertIn("TLS certificate has 25 days remaining", rendered)
 
 
 class ProxyTests(unittest.TestCase):

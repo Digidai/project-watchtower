@@ -93,6 +93,13 @@ The JSON report includes:
 - local system metrics
 - resource budget usage
 
+The dashboard is an aggregation view, not a replacement for raw mode status. It
+deduplicates repeated URL and workflow findings across the newest report for each
+mode, then separates operational incidents, owned-project actions, and external
+observations. Only the first two categories affect the aggregate health badge;
+external failures and certificate warnings remain visible with their contributing
+modes and collapsed execution count.
+
 ## Reclamation Reality
 
 Oracle documents that idle Always Free instances may be reclaimed when CPU,

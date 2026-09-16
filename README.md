@@ -54,7 +54,11 @@ The dashboard serves `/var/lib/project-watchtower/reports/index.html` only on
 `127.0.0.1:8765`, behind an authenticated Cloudflare Tunnel ingress. Public port 80
 is closed; use `https://oracle.syncany.app/`, not the instance IP, to sign in.
 The page aggregates the newest report per mode, self-check service state, resource metrics,
-and current failures.
+and current findings. Findings use stable URL/workflow identities so the same result in
+`github-lite` and `daily` is counted once. Operational incidents and owned-project actions
+drive the overall status; third-party availability, latency, and certificate signals stay
+visible in a separate external-observation section without making the server itself look down.
+Mode rows retain their raw status, including warnings caused only by external observations.
 The self-check service state includes the Oracle HY2 residential proxy units,
 the Trojan-WS TCP entry, local Xray listeners, direct residential Xray outbound
 shape, SOCKS exit IP, and the Trojan-WS watchdog timer.
@@ -149,6 +153,10 @@ URL failures are split into critical and observed failures. Curated core URLs ar
 critical; repo pages, repo homepages, README-discovered links, and VentureDex
 company homepages are observed so that one stale upstream URL does not make the
 server itself look broken.
+The dashboard further classifies observed results using repository ownership: active,
+non-fork Digidai repo homepages and GitHub workflow failures are actionable; fork,
+README, and VentureDex company targets are external observations. Classification changes
+presentation only. Raw reports and per-mode warning thresholds are not suppressed.
 
 ## Proxy Operations
 

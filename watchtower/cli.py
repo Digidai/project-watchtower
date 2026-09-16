@@ -1542,6 +1542,8 @@ def dashboard_class(status: str | None) -> str:
         return "fail"
     if normalized in {"warn", "warning", "degraded", "busy"}:
         return "warn"
+    if normalized in {"info", "observe", "observation"}:
+        return "info"
     return "muted"
 
 
@@ -1597,6 +1599,178 @@ def dashboard_percent(part: Any, total: Any) -> float:
     return max(0.0, min(100.0, safe_float(part) / denominator * 100.0))
 
 
+def canonical_dashboard_url(value: Any) -> str:
+    """Return a stable URL identity without changing path semantics."""
+    raw = str(value or "").strip()
+    normalized = normalize_url(raw)
+    if not normalized:
+        return raw
+    parsed = urllib.parse.urlsplit(normalized)
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    default_port = (parsed.scheme == "https" and port == 443) or (parsed.scheme == "http" and port == 80)
+    netloc = host if port is None or default_port else f"{host}:{port}"
+    path = parsed.path or "/"
+    return urllib.parse.urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, ""))
+
+
+def build_dashboard_findings(
+    reports: dict[str, dict[str, Any]],
+    ordered_modes: list[str],
+) -> list[dict[str, Any]]:
+    """Deduplicate dashboard findings and separate actionable health from observations."""
+    repo_index: dict[str, dict[str, Any]] = {}
+    for mode in ordered_modes:
+        for repo in reports.get(mode, {}).get("repositories", []) or []:
+            if not isinstance(repo, dict) or not repo.get("name"):
+                continue
+            key = str(repo["name"]).lower()
+            current = repo_index.get(key)
+            if current is None or (current.get("fork") and not repo.get("fork")):
+                repo_index[key] = repo
+
+    category_priority = {"observation": 1, "action": 2, "incident": 3}
+    findings: dict[str, dict[str, Any]] = {}
+
+    def add(
+        key: str,
+        category: str,
+        kind: str,
+        title: str,
+        detail: str,
+        mode: str,
+    ) -> None:
+        existing = findings.get(key)
+        if existing is None:
+            findings[key] = {
+                "key": key,
+                "category": category,
+                "kind": kind,
+                "title": title,
+                "detail": detail,
+                "modes": [mode],
+                "occurrences": 1,
+            }
+            return
+        existing["occurrences"] = safe_int(existing.get("occurrences")) + 1
+        if mode not in existing["modes"]:
+            existing["modes"].append(mode)
+        if category_priority[category] > category_priority[str(existing["category"])]:
+            existing.update(category=category, kind=kind, title=title, detail=detail)
+
+    def url_category(item: dict[str, Any]) -> str:
+        if item.get("critical"):
+            return "incident"
+        source = str(item.get("source") or "")
+        if source in {"explicit", "venturedex_source"}:
+            return "action"
+        repo_name = str(item.get("repo") or "").lower()
+        repo = repo_index.get(repo_name)
+        if source in {"github_repo", "repo_homepage"} and repo and not repo.get("fork") and not repo.get("archived"):
+            return "action"
+        return "observation"
+
+    for mode in ordered_modes:
+        report = reports.get(mode, {})
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        slow_threshold = safe_int(summary.get("slow_url_ms")) or 8000
+
+        for check in report.get("self_checks", []) or []:
+            if not isinstance(check, dict) or check.get("ok"):
+                continue
+            name = str(check.get("name") or "unnamed self check")
+            status = dashboard_class(str(check.get("status") or "warn"))
+            add(
+                f"service:{name.lower()}",
+                "incident" if status == "fail" else "action",
+                "service",
+                name,
+                str(check.get("detail") or status),
+                mode,
+            )
+
+        for item in report.get("urls", []) or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "")
+            canonical = canonical_dashboard_url(url)
+            repo_name = str(item.get("repo") or "")
+            source = str(item.get("source") or "url")
+            title = " ".join(part for part in [repo_name, source] if part)
+            category = url_category(item)
+            if not item.get("ok"):
+                result = str(item.get("error") or (f"HTTP {item.get('status')}" if item.get("status") else "request failed"))
+                add(f"url:{canonical}", category, "url", title or canonical, f"{url} - {result}", mode)
+            elif safe_int(item.get("elapsed_ms")) > slow_threshold:
+                elapsed = safe_int(item.get("elapsed_ms"))
+                add(
+                    f"latency:{canonical}",
+                    category,
+                    "latency",
+                    title or canonical,
+                    f"{url} - {elapsed} ms exceeds {slow_threshold} ms",
+                    mode,
+                )
+
+            days = item.get("tls_days_remaining")
+            if days is not None and safe_int(days) < 30:
+                add(
+                    f"certificate:{canonical}",
+                    category,
+                    "certificate",
+                    title or canonical,
+                    f"{url} - TLS certificate has {safe_int(days)} days remaining",
+                    mode,
+                )
+
+        for check in report.get("github_repo_checks", []) or []:
+            if not isinstance(check, dict) or check.get("ok") or check.get("status") in {"missing", "skipped"}:
+                continue
+            repo_name = str(check.get("repo") or "unknown repository")
+            kind = str(check.get("kind") or "github")
+            label = str(check.get("detail") or kind)
+            key_label = re.sub(r"\s+", " ", label.strip().lower())
+            detail = " - ".join(
+                part
+                for part in [str(check.get("status") or "failed"), label, str(check.get("url") or "")]
+                if part
+            )
+            add(
+                f"github:{repo_name.lower()}:{kind.lower()}:{key_label}",
+                "action",
+                "github",
+                f"{repo_name} - {label}",
+                detail,
+                mode,
+            )
+
+        github = report.get("github") if isinstance(report.get("github"), dict) else {}
+        if github.get("error"):
+            error = str(github["error"])
+            add(
+                f"github-api:{error.lower()}",
+                "action",
+                "monitor",
+                "GitHub inventory collection",
+                error,
+                mode,
+            )
+
+    return sorted(
+        findings.values(),
+        key=lambda item: (
+            -category_priority[str(item["category"])],
+            str(item["kind"]),
+            str(item["title"]).lower(),
+        ),
+    )
+
+
 DASHBOARD_CSS = """
     :root {
       color-scheme: light dark;
@@ -1610,6 +1784,7 @@ DASHBOARD_CSS = """
       --success: #16823a;
       --warning: #b45309;
       --danger: #c0262d;
+      --info: #2563eb;
       --teal: #0f766e;
       --shadow: 0 12px 32px rgba(28, 31, 35, 0.08);
     }
@@ -1712,6 +1887,7 @@ DASHBOARD_CSS = """
     .tone-ok { --accent: var(--success); }
     .tone-warn { --accent: var(--warning); }
     .tone-fail { --accent: var(--danger); }
+    .tone-info { --accent: var(--info); }
     .tone-muted { --accent: var(--primary); }
     .status-title {
       display: flex;
@@ -1876,6 +2052,7 @@ DASHBOARD_CSS = """
     .chip.ok { background: var(--success); }
     .chip.warn { background: var(--warning); }
     .chip.fail { background: var(--danger); }
+    .chip.info { background: var(--info); }
     .chip.muted { background: #697586; }
     .service-grid {
       display: grid;
@@ -1990,6 +2167,7 @@ DASHBOARD_CSS = """
         --success: #3fbf68;
         --warning: #d89b37;
         --danger: #ee6468;
+        --info: #70a5ff;
         --teal: #46b7a9;
         --shadow: none;
       }
@@ -2245,6 +2423,7 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
             "ok": ("ok", "正常"),
             "warn": ("warn", "注意"),
             "fail": ("fail", "故障"),
+            "info": ("observe", "观察"),
             "muted": (str(status or "unknown"), "未知"),
         }[normalized]
 
@@ -2257,21 +2436,27 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
     warn_count = sum(1 for summary in summaries if summary.get("status") == "warn")
     fail_count = sum(1 for summary in summaries if summary.get("status") == "fail")
     total_urls = sum(safe_int(summary.get("url_count")) for summary in summaries)
-    total_url_failures = sum(safe_int(summary.get("failed_url_count")) for summary in summaries)
-    total_critical_url_failures = sum(safe_int(summary.get("failed_critical_url_count")) for summary in summaries)
-    total_self_failures = sum(safe_int(summary.get("failed_self_check_count")) for summary in summaries)
-    total_repo_failures = sum(safe_int(summary.get("failed_repo_check_count")) for summary in summaries)
-    total_failures = total_url_failures + total_self_failures + total_repo_failures
+    unique_urls = {
+        canonical_dashboard_url(item.get("url"))
+        for mode in ordered_modes
+        for item in (reports[mode].get("urls", []) or [])
+        if isinstance(item, dict) and item.get("url")
+    }
+    findings = build_dashboard_findings(reports, ordered_modes)
+    incident_findings = [item for item in findings if item.get("category") == "incident"]
+    action_findings = [item for item in findings if item.get("category") == "action"]
+    observation_findings = [item for item in findings if item.get("category") == "observation"]
+    actionable_findings = incident_findings + action_findings
     total_bytes_read = sum(
         safe_int((reports[mode].get("resource_budget") or {}).get("bytes_read"))
         for mode in ordered_modes
         if isinstance(reports[mode].get("resource_budget"), dict)
     )
-    overall_status = "fail" if fail_count else "warn" if warn_count else "ok"
+    overall_status = "fail" if incident_findings else "warn" if action_findings else "ok"
     overall_labels = {
-        "ok": ("Healthy", "运行正常"),
-        "warn": ("Needs attention", "需要关注"),
-        "fail": ("Failing", "存在故障"),
+        "ok": ("Core healthy", "核心正常"),
+        "warn": ("Action needed", "需要处理"),
+        "fail": ("Service failure", "服务故障"),
     }
     overall_label_en, overall_label_zh = overall_labels[overall_status]
 
@@ -2334,25 +2519,33 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
             "Overall",
             "总体状态",
             dual(overall_label_en, overall_label_zh, "span", f" class='chip {overall_status}'"),
-            f"{ok_count} ok / {warn_count} warn / {fail_count} fail",
-            f"{ok_count} 正常 / {warn_count} 注意 / {fail_count} 故障",
+            f"{len(incident_findings)} incidents / {len(action_findings)} owned actions",
+            f"{len(incident_findings)} 个运行故障 / {len(action_findings)} 个自有项目待处理项",
             overall_status,
         ),
         metric_card(
-            "URL Checks",
-            "URL 检测",
-            esc(fmt_number(total_urls)),
-            f"{fmt_number(total_url_failures)} failing, {fmt_number(total_critical_url_failures)} critical",
-            f"{fmt_number(total_url_failures)} 个异常，{fmt_number(total_critical_url_failures)} 个关键异常",
-            "fail" if total_critical_url_failures else "warn" if total_url_failures else "ok",
+            "Unique Endpoints",
+            "唯一端点",
+            esc(fmt_number(len(unique_urls))),
+            f"{fmt_number(total_urls)} check executions across {len(ordered_modes)} modes",
+            f"{len(ordered_modes)} 个模式共执行 {fmt_number(total_urls)} 次 URL 检测",
+            "ok",
         ),
         metric_card(
-            "Service Issues",
-            "服务问题",
-            esc(fmt_number(total_self_failures)),
-            f"{fmt_number(total_repo_failures)} GitHub repo check issues",
-            f"{fmt_number(total_repo_failures)} 个 GitHub 仓库检查问题",
-            "fail" if total_self_failures else "warn" if total_repo_failures else "ok",
+            "Action Items",
+            "待处理项",
+            esc(fmt_number(len(actionable_findings))),
+            f"{len(incident_findings)} operational / {len(action_findings)} owned project",
+            f"{len(incident_findings)} 个运行故障 / {len(action_findings)} 个自有项目问题",
+            overall_status,
+        ),
+        metric_card(
+            "External Observations",
+            "外部观察",
+            esc(fmt_number(len(observation_findings))),
+            "deduplicated third-party URL, latency, and certificate signals",
+            "已去重的第三方 URL、延迟和证书信号，不代表本机故障",
+            "info" if observation_findings else "ok",
         ),
         metric_card(
             "Traffic Read",
@@ -2408,22 +2601,28 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
         status = str(summary.get("status") or "unknown")
         url_failures = safe_int(summary.get("failed_url_count"))
         critical_failures = safe_int(summary.get("failed_critical_url_count"))
+        cert_warnings = safe_int(summary.get("cert_warning_count"))
+        slow_urls = safe_int(summary.get("slow_url_count"))
         repo_checks = safe_int(summary.get("repo_check_count"))
         repo_failures = safe_int(summary.get("failed_repo_check_count"))
         self_checks = safe_int(summary.get("self_check_count"))
         self_failures = safe_int(summary.get("failed_self_check_count"))
         status_en, status_zh = status_label(status)
         status_chip = dual(status_en, status_zh, "span", f" class='chip {dashboard_class(status)}'")
-        critical_detail = dual(f"{critical_failures} critical", f"{critical_failures} 个关键异常", "small")
-        repo_detail = dual(f"of {repo_checks} ok", f"共 {repo_checks} 个正常", "small")
-        self_detail = dual(f"of {self_checks} ok", f"共 {self_checks} 个正常", "small")
+        url_detail = dual(
+            f"{critical_failures} critical / {cert_warnings} TLS / {slow_urls} slow",
+            f"{critical_failures} 关键 / {cert_warnings} 证书 / {slow_urls} 慢响应",
+            "small",
+        )
+        repo_detail = dual(f"successful of {repo_checks}", f"成功，共 {repo_checks} 项", "small")
+        self_detail = dual(f"successful of {self_checks}", f"成功，共 {self_checks} 项", "small")
         rows.append(
             f"<tr class='row-{dashboard_class(status)}'>"
             f"<td><span class='mode-name'>{esc(mode)}</span></td>"
             f"<td>{status_chip}</td>"
             f"<td class='nowrap'>{esc(fmt_time(run.get('completed_at')))}</td>"
             f"<td>{esc(fmt_number(summary.get('url_count')))}</td>"
-            f"<td>{esc(fmt_number(url_failures))}{critical_detail}</td>"
+            f"<td>{esc(fmt_number(url_failures))}{url_detail}</td>"
             f"<td>{esc(fmt_number(repo_checks - repo_failures))}{repo_detail}</td>"
             f"<td>{esc(fmt_number(self_checks - self_failures))}{self_detail}</td>"
             f"<td>{esc(fmt_bytes(budget.get('bytes_read')))}</td>"
@@ -2449,60 +2648,54 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
             "</article>"
         )
 
-    issues: list[tuple[str, str, str, str, str]] = []
-    for check in service_checks:
-        if check.get("ok"):
-            continue
-        tone = dashboard_class(str(check.get("status") or "warn"))
-        issues.append((tone, "self", "service", str(check.get("name") or ""), str(check.get("detail") or "")))
-
-    for mode in ordered_modes:
-        report = reports[mode]
-        for item in report.get("urls", []) or []:
-            if not isinstance(item, dict) or item.get("ok"):
-                continue
-            tone = "fail" if item.get("critical") else "warn"
-            title = " ".join(part for part in [str(item.get("source") or "url"), str(item.get("repo") or "")] if part)
-            detail = " - ".join(part for part in [str(item.get("url") or ""), str(item.get("error") or item.get("status") or "")] if part)
-            issues.append((tone, mode, "url", title, detail))
-        for check in report.get("github_repo_checks", []) or []:
-            if not isinstance(check, dict) or check.get("ok"):
-                continue
-            title = " ".join(part for part in [str(check.get("repo") or ""), str(check.get("kind") or "")] if part)
-            detail = " - ".join(part for part in [str(check.get("status") or ""), str(check.get("detail") or ""), str(check.get("url") or "")] if part)
-            issues.append(("warn", mode, "github", title, detail))
-
-    failure_items: list[str] = []
-    for tone, mode, kind, title, detail in issues[:80]:
-        tone_en, tone_zh = status_label(tone)
-        tone_chip = dual(tone_en, tone_zh, "span", f" class='chip {tone}'")
-        failure_items.append(
-            "<li class='issue-item'>"
-            f"{tone_chip}"
-            "<div>"
-            f"<strong>{esc(title or kind)}</strong>"
-            f"<small>{esc(mode)} / {esc(kind)}</small>"
-            f"<code>{esc(detail)}</code>"
-            "</div>"
-            "</li>"
-        )
-    if len(issues) > 80:
-        more_chip = dual("more", "更多", "span", " class='chip muted'")
-        failure_items.append(
-            "<li class='issue-item'>"
-            f"{more_chip}<div>"
-            f"{dual(f'{len(issues) - 80} additional issues', f'还有 {len(issues) - 80} 个问题', 'strong')}"
-            f"{dual('Open latest JSON for the full set.', '打开最新 JSON 查看完整列表。', 'small')}</div></li>"
-        )
-    if not failure_items:
+    def render_finding_items(items: list[dict[str, Any]], empty_kind: str) -> str:
+        rendered: list[str] = []
+        labels = {
+            "incident": ("incident", "故障", "fail"),
+            "action": ("action", "待处理", "warn"),
+            "observation": ("observe", "观察", "info"),
+        }
+        for item in items[:80]:
+            category = str(item.get("category") or "observation")
+            label_en, label_zh, tone = labels.get(category, labels["observation"])
+            modes = ", ".join(str(mode) for mode in item.get("modes", [])) or "unknown"
+            occurrences = max(1, safe_int(item.get("occurrences")))
+            meta_en = f"{modes} / {item.get('kind') or 'finding'} / {occurrences} execution(s) collapsed"
+            meta_zh = f"{modes} / {item.get('kind') or 'finding'} / 已合并 {occurrences} 次检测"
+            finding_chip = dual(label_en, label_zh, "span", f" class='chip {tone}'")
+            rendered.append(
+                "<li class='issue-item'>"
+                f"{finding_chip}"
+                "<div>"
+                f"<strong>{esc(item.get('title') or item.get('kind') or 'finding')}</strong>"
+                f"{dual(meta_en, meta_zh, 'small')}"
+                f"<code>{esc(item.get('detail') or '')}</code>"
+                "</div>"
+                "</li>"
+            )
+        if len(items) > 80:
+            more_chip = dual("more", "更多", "span", " class='chip muted'")
+            rendered.append(
+                "<li class='issue-item'>"
+                f"{more_chip}<div>"
+                f"{dual(f'{len(items) - 80} additional findings', f'还有 {len(items) - 80} 个发现项', 'strong')}"
+                f"{dual('Open the per-mode JSON reports for the full set.', '打开各模式 JSON 报告查看完整列表。', 'small')}</div></li>"
+            )
+        if rendered:
+            return "".join(rendered)
+        ok_title_en = "No actionable problems" if empty_kind == "action" else "No external observations"
+        ok_title_zh = "当前没有需要处理的问题" if empty_kind == "action" else "当前没有外部观察项"
         ok_chip = dual("ok", "正常", "span", " class='chip ok'")
-        failure_items.append(
+        return (
             "<li class='issue-item'>"
             f"{ok_chip}"
-            f"<div>{dual('No current failures', '当前没有故障', 'strong')}"
-            f"{dual('latest report per mode', '按每个模式的最新报告汇总', 'small')}</div>"
+            f"<div>{dual(ok_title_en, ok_title_zh, 'strong')}"
+            f"{dual('Deduplicated across the newest report for each mode.', '已按各模式最新报告去重。', 'small')}</div>"
             "</li>"
         )
+
+    action_items_html = render_finding_items(actionable_findings, "action")
+    observation_items_html = render_finding_items(observation_findings, "observation")
 
     network_rows: list[str] = []
     for name, data in sorted(public_networks.items()):
@@ -2538,12 +2731,14 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
     latest_mode = esc(report_mode(current))
     mode_count = esc(fmt_number(len(ordered_modes)))
     status_copy_en = (
-        f"Latest mode is {latest_mode}. Current aggregate has {fmt_number(total_urls)} URL checks, "
-        f"{fmt_number(total_failures)} total issues, and {fmt_bytes(total_bytes_read)} bounded traffic read."
+        f"Latest mode is {latest_mode}. {len(actionable_findings)} actionable finding(s) and "
+        f"{len(observation_findings)} external observation(s) remain after deduplicating "
+        f"{fmt_number(total_urls)} executions across {fmt_number(len(unique_urls))} endpoints."
     )
     status_copy_zh = (
-        f"最新模式是 {latest_mode}。当前汇总包含 {fmt_number(total_urls)} 个 URL 检测、"
-        f"{fmt_number(total_failures)} 个问题，以及 {fmt_bytes(total_bytes_read)} 受限读取流量。"
+        f"最新模式是 {latest_mode}。跨模式去重后有 {len(actionable_findings)} 个待处理项和 "
+        f"{len(observation_findings)} 个外部观察项；{fmt_number(total_urls)} 次检测覆盖 "
+        f"{fmt_number(len(unique_urls))} 个唯一端点。"
     )
 
     return f"""<!doctype html>
@@ -2598,7 +2793,7 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
   <section>
     <div class="section-header">
       {dual('Mode Status', '模式状态', 'h2')}
-      {dual('Newest report retained per mode', '每个模式保留的最新报告', 'small')}
+      {dual('Raw per-mode status; external observations can mark a mode warn', '各模式原始状态；外部观察也可能使模式标记为注意', 'small')}
     </div>
     <div class="table-shell">
       <table>
@@ -2629,10 +2824,18 @@ def render_dashboard(output_dir: Path, current: dict[str, Any]) -> str:
 
   <section>
     <div class="section-header">
-      {dual('Current Issues', '当前问题', 'h2')}
-      {dual('Services, URLs, and GitHub checks', '服务、URL 和 GitHub 检查', 'small')}
+      {dual('Action Required', '需要处理', 'h2')}
+      {dual('Operational incidents and owned-project findings', '运行故障与自有项目问题，已跨模式去重', 'small')}
     </div>
-    <ul class="issue-list">{''.join(failure_items)}</ul>
+    <ul class="issue-list">{action_items_html}</ul>
+  </section>
+
+  <section>
+    <div class="section-header">
+      {dual('External Observations', '外部观察', 'h2')}
+      {dual('Third-party availability, latency, and certificate signals', '第三方可用性、延迟和证书信号，不代表本机故障', 'small')}
+    </div>
+    <ul class="issue-list">{observation_items_html}</ul>
   </section>
 
   <section>
